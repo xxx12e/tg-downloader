@@ -1,0 +1,5 @@
+telethon>=1.36
+python-socks[asyncio]
+cryptg
+qrcode[pil]
+aiohttp

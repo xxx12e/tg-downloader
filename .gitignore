@@ -1,0 +1,16 @@
+# 登录凭证、日志、缓存 —— 绝对不能传
+data/
+*.session
+*.session-journal
+
+# 你自己的 api_id / api_hash / 代理设置
+config.json
+
+# 下载到的文件
+downloads/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
