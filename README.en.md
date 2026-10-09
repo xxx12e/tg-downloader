@@ -102,9 +102,9 @@ A QR code appears on first launch — scan it with your phone: **Settings → De
 | What | How |
 |---|---|
 | A single file | click the **⬇** in its corner |
-| Several messages | **选择 (Select)** in the top right → click messages → **下载选中的 (Download selected)** |
-| A whole group / channel | **下载全部 (Download all)**, with type and size filters |
-| Every comment on a post | open the comment thread → **下载全部评论** |
+| Several messages | **Select** in the top right → click messages → **Download selected** |
+| A whole group / channel | **Download all**, with type and size filters |
+| Every comment on a post | open the comment thread → **Download all comments** |
 
 The **⬇** in the top left is the download manager (progress, speed, per-task stop); **📁** opens the download folder.
 
@@ -112,7 +112,7 @@ The **⬇** in the top left is the download manager (progress, speed, per-task s
 
 ```
 downloads/<chat name>_<id>/
-  图片/ 视频/ 文件/ ...     photos / videos / documents — named 日期_消息ID_原文件名
+  图片/ 视频/ 文件/ ...     photos / videos / documents — named <date>_<msg id>_<original name>
   评论区/帖子123/           files from that post's comments + 评论.txt
   聊天记录.txt              text log
   messages.jsonl           structured log for further processing
