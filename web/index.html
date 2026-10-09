@@ -262,24 +262,24 @@
 <!-- ============ 登录 ============ -->
 <div id="login">
   <div class="login-card">
-    <div id="l-connecting"><h2>正在连接 Telegram…</h2><div class="spinner"></div></div>
+    <div id="l-connecting"><h2 data-t="正在连接 Telegram…">正在连接 Telegram…</h2><div class="spinner"></div></div>
     <div id="l-qr" class="hidden">
-      <h2>扫码登录</h2>
-      <img id="qr" alt="二维码">
-      <div class="steps">手机打开 Telegram → <b>设置</b> → <b>设备</b> → <b>连接桌面设备</b><br>扫上面的码，只需要登录这一次</div>
+      <h2 data-t="扫码登录">扫码登录</h2>
+      <img id="qr" alt="QR">
+      <div class="steps"><span data-t="手机打开 Telegram →">手机打开 Telegram →</span> <b data-t="设置">设置</b> → <b data-t="设备">设备</b> → <b data-t="连接桌面设备">连接桌面设备</b><br><span data-t="扫上面的码，只需要登录这一次">扫上面的码，只需要登录这一次</span></div>
     </div>
     <div id="l-password" class="hidden">
-      <h2>两步验证</h2>
+      <h2 data-t="两步验证">两步验证</h2>
       <p id="pw-hint" style="color:var(--sub)"></p>
       <form onsubmit="sendPassword(event)" style="display:flex;gap:8px;margin-top:14px">
-        <input type="password" id="pw" style="flex:1;padding:8px 12px;border:1px solid var(--line);border-radius:10px" placeholder="密码">
-        <button class="btn fill">确定</button>
+        <input type="password" id="pw" style="flex:1;padding:8px 12px;border:1px solid var(--line);border-radius:10px" data-t-ph="密码" placeholder="密码">
+        <button class="btn fill" data-t="确定">确定</button>
       </form>
     </div>
     <div id="l-error" class="hidden">
-      <h2>出问题了</h2>
+      <h2 data-t="出问题了">出问题了</h2>
       <p class="err" id="err"></p>
-      <button class="btn fill" onclick="api('/api/retry','POST')">重试</button>
+      <button class="btn fill" onclick="api('/api/retry','POST')" data-t="重试">重试</button>
     </div>
   </div>
 </div>
@@ -288,16 +288,17 @@
 <div id="app" class="hidden">
   <aside id="side">
     <div class="side-top">
-      <button class="icon" title="打开下载文件夹" onclick="openRel('')">📁</button>
-      <div class="search"><input id="q" placeholder="搜索" oninput="renderChats()"></div>
-      <button class="icon" title="下载管理" onclick="openDrawer()">⬇<span class="badge hidden" id="dlcount"></span></button>
+      <button class="icon" data-t-title="打开下载文件夹" title="打开下载文件夹" onclick="openRel('')">📁</button>
+      <button class="icon" id="langBtn" onclick="setLang(LANG === 'zh' ? 'en' : 'zh')" title="中文 / English">EN</button>
+      <div class="search"><input id="q" data-t-ph="搜索" placeholder="搜索" oninput="renderChats()"></div>
+      <button class="icon" data-t-title="下载管理" title="下载管理" onclick="openDrawer()">⬇<span class="badge hidden" id="dlcount"></span></button>
     </div>
     <div class="folders" id="folders"></div>
     <div id="chatlist"><div class="spinner"></div></div>
   </aside>
 
   <main id="chat">
-    <div class="nochat">选择一个聊天开始浏览</div>
+    <div class="nochat" data-t="选择一个聊天开始浏览">选择一个聊天开始浏览</div>
   </main>
 </div>
 
@@ -306,9 +307,9 @@
   <div class="mask" onclick="closeDrawer()"></div>
   <div id="drawer">
     <div class="dh">
-      <h3>下载管理</h3>
-      <button class="btn" onclick="api('/api/clear','POST').then(pollJobs)">清除已结束</button>
-      <button class="btn red" onclick="api('/api/cancel','POST',{})">全部停止</button>
+      <h3 data-t="下载管理">下载管理</h3>
+      <button class="btn" onclick="api('/api/clear','POST').then(pollJobs)" data-t="清除已结束">清除已结束</button>
+      <button class="btn red" onclick="api('/api/cancel','POST',{})" data-t="全部停止">全部停止</button>
       <button class="icon" onclick="closeDrawer()">✕</button>
     </div>
     <div id="jobs"></div>
@@ -318,10 +319,10 @@
 <div id="viewer" class="hidden">
   <div class="vt">
     <span id="vname" class="grow"></span>
-    <button class="btn" id="vdl">⬇ 下载</button>
-    <button class="btn" id="vopen">打开</button>
-    <button class="btn" id="vreveal">在文件夹中显示</button>
-    <button class="btn" onclick="closeViewer()">✕ 关闭</button>
+    <button class="btn" id="vdl" data-t="⬇ 下载">⬇ 下载</button>
+    <button class="btn" id="vopen" data-t="打开">打开</button>
+    <button class="btn" id="vreveal" data-t="在文件夹中显示">在文件夹中显示</button>
+    <button class="btn" onclick="closeViewer()" data-t="✕ 关闭">✕ 关闭</button>
   </div>
   <div class="vb">
     <button class="nav" style="left:0" onclick="viewStep(-1)">‹</button>
@@ -334,11 +335,97 @@
 <div id="player" class="hidden">
   <div class="pinfo"><b id="pname"></b><span id="psub"></span></div>
   <audio id="paudio" controls></audio>
-  <button class="icon" onclick="stopAudio()" title="关闭">✕</button>
+  <button class="icon" onclick="stopAudio()" data-t-title="关闭" title="关闭">✕</button>
 </div>
 <div id="toast" class="hidden"></div>
 
 <script>
+/* ================= 中英切换 ================= */
+const I18N = {
+  // 登录
+  "正在连接 Telegram…": "Connecting to Telegram…", "扫码登录": "Scan to log in", "二维码": "QR code",
+  "手机打开 Telegram →": "On your phone, open Telegram →", "设置": "Settings", "设备": "Devices",
+  "连接桌面设备": "Link Desktop Device", "扫上面的码，只需要登录这一次": "Scan the code above — you only need to do this once",
+  "两步验证": "Two-step verification", "密码": "Password", "确定": "OK", "出问题了": "Something went wrong", "重试": "Retry",
+  // 左栏
+  "搜索": "Search", "打开下载文件夹": "Open downloads folder", "下载管理": "Downloads",
+  "全部": "All", "私聊": "DM", "群组": "Group", "频道": "Channel", "有评论区": "Has comments", "禁止保存": "Restricted",
+  "筛选:全部": "All", "筛选:私聊": "DMs", "筛选:群组": "Groups", "筛选:频道": "Channels",
+  "筛选:有评论区": "Has comments", "筛选:禁止保存": "Restricted",
+  "收藏夹": "Saved Messages", "机器人": "Bot", "没有": "Nothing here", "选择一个聊天开始浏览": "Pick a chat to start browsing",
+  // 聊天头部
+  "评论": "Comments", "未加入": "Not joined", "条评论": " comments", "搜索：": "Search: ",
+  "· 点消息跳到原位置": " · click a result to jump to it", "在这个聊天里搜索": "Search in this chat",
+  "关键词 或 #话题": "Keyword or #hashtag", "返回（Esc）": "Back (Esc)", "到最新": "Jump to latest",
+  "选择": "Select", "取消选择": "Cancel", "下载全部": "Download all", "下载全部评论": "Download all comments",
+  // 消息
+  "今天": "Today", "昨天": "Yesterday", "周": "", "日一二三四五六": "SunMonTueWedThuFriSat",
+  "已编辑": "edited", "转发自": "Forwarded from", "打开原消息": "Open original", "回复": "Reply",
+  "[消息]": "[message]", "系统消息": "service message", "消息已删除": "message deleted", "跳到这条消息": "Jump to this message", "没有消息": "No messages",
+  "还没有评论": "No comments yet", "没有搜到": "No results", "条评论<span": " comments<span",
+  "这种按钮要给机器人发消息，在手机上点": "This button sends a message to a bot — use the phone app",
+  "这条消息不存在或已被删除，已跳到附近": "That message is gone or deleted — jumped nearby",
+  // 媒体 / 下载按钮
+  "下载": "Download", "已下载，点击打开": "Downloaded — click to open", "失败，点击重试": "Failed — click to retry",
+  "排队中": "Queued", "下载中": "Downloading", "语音消息": "Voice message",
+  "点击预览 / 播放；右下角 ⬇ 下载": "Click to preview / play; ⬇ in the corner to download",
+  "重复": "duplicate", "这个文件前面已经出现过": "This file already appeared above",
+  "这个文件前面已经出现过，是频道重复发的": "Already appeared above — the channel reposted it",
+  // 右键菜单
+  "预览": "Preview", "播放": "Play", "用电脑上的程序打开": "Open with default app", "在文件夹中显示": "Show in folder",
+  "下载这个文件": "Download this file", "选中 / 取消选中": "Select / deselect", "复制文字": "Copy text", "已复制": "Copied",
+  // 选择模式
+  "已选": "Selected ", "条": "", "个文件": " files", "全选已加载": "Select all loaded",
+  "连评论区一起下": "Include comments", "取消": "Cancel", "⬇ 下载选中的": "⬇ Download selected",
+  "已开始下载": "Started downloading ", "已经下载过了": "Already downloaded",
+  // 下载全部弹窗
+  "下载全部 ·": "Download all ·", "下载这条帖子的全部评论": "Download every comment on this post",
+  "内容": "Content", "帖子 + 评论区": "Posts + comments", "只要评论区": "Comments only", "只要帖子": "Posts only",
+  "文件类型": "File types", "图片": "Photos", "视频": "Videos", "动图": "GIFs", "文件": "Files",
+  "音频": "Audio", "语音": "Voice", "视频消息": "Video messages", "贴纸": "Stickers",
+  "其他": "Other", "导出文字记录": "Export text log", "跳过大于": "Skip files over", "不限": "no limit",
+  "已经下过的文件会自动跳过，中途停了下次接着下。": "Already-downloaded files are skipped; stopping and resuming picks up where it left off.",
+  "开始下载": "Start download",
+  // 下载管理
+  "清除已结束": "Clear finished", "全部停止": "Stop all", "完成": "Done", "出错": "Error", "已停止": "Stopped", "已取消": "Cancelled",
+  "个": "", "跳过已有": "skipped ", "去重": "deduped ", "失败": "failed ", "扫描": "scanned ",
+  "频道把同一个文件发了多遍，只存一份": "The channel reposted the same files; only one copy is kept",
+  "打开文件夹": "Open folder", "停止": "Stop",
+  "还没有下载任务": "No downloads yet",
+  "在聊天里点图片/文件上的 ⬇，或者点右上角“下载全部”": "Click ⬇ on any file, or use “Download all” in the top right",
+  // 预览窗口
+  "⬇ 下载": "⬇ Download", "打开": "Open", "✕ 关闭": "✕ Close", "关闭": "Close",
+  "图片加载失败": "Could not load the image", "读取失败：": "Could not read: ",
+  "这种文件不能在线预览，点上面“下载”": "This file type can't be previewed — use Download above",
+  "这个视频格式浏览器放不了，点上面“下载”后用电脑上的播放器打开": "The browser can't play this format — download it and use a desktop player",
+  "…… 只显示前 256 KB，完整内容请下载": "…… showing the first 256 KB only — download for the rest",
+  // 链接
+  "正在打开…": "Opening…", "打开这个链接？": "Open this link?", "这种链接打不开：": "Can't open this link: ",
+  "就是当前这个聊天": "You're already in this chat", "找不到这条帖子": "Can't find that post",
+  "这条帖子没有评论区": "That post has no comments",
+  "你还没加入，加入后才能看里面的消息。": "You haven't joined — join to see the messages inside.",
+  "加入频道": "Join channel", "加入群组": "Join group", "申请加入": "Request to join", "人": " members",
+  "需要管理员同意": "admin approval required",
+};
+let LANG = localStorage.getItem("tgdl.lang") || ((navigator.language || "").toLowerCase().startsWith("zh") ? "zh" : "en");
+const t = s => LANG === "en" ? (I18N[s] ?? s) : s;
+function setLang(l) {
+  LANG = l;
+  localStorage.setItem("tgdl.lang", l);
+  if (ready) api("/api/lang", "POST", { lang: l }).catch(() => {});  // 后台的状态和日志也跟着切
+  applyStaticLang();
+  if (ready) { renderChats(); if (cur) { renderChat(); renderMsgs(); } pollJobs(); }
+  document.documentElement.lang = l === "zh" ? "zh-CN" : "en";
+}
+function applyStaticLang() {
+  document.querySelectorAll("[data-t]").forEach(el => el.textContent = t(el.dataset.t));
+  document.querySelectorAll("[data-t-title]").forEach(el => el.title = t(el.dataset.tTitle));
+  document.querySelectorAll("[data-t-ph]").forEach(el => el.placeholder = t(el.dataset.tPh));
+  if (window.renderFolders) renderFolders();
+  const b = document.getElementById("langBtn");
+  if (b) b.textContent = LANG === "zh" ? "EN" : "中";
+}
+
 const TOKEN = "{{TOKEN}}";
 const TYPES = [["photo","图片"],["video","视频"],["gif","动图"],["file","文件"],["audio","音频"],["voice","语音"],["round","视频消息"],["sticker","贴纸"]];
 const FOLDERS = [["all","全部"],["私聊","私聊"],["群组","群组"],["频道","频道"],["cmt","有评论区"],["lock","禁止保存"]];
@@ -357,8 +444,8 @@ async function api(path, method = "GET", body) {
   return data;
 }
 function toast(s) {
-  const t = $("toast"); t.textContent = s; t.classList.remove("hidden");
-  clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.add("hidden"), 2600);
+  const el = $("toast"); el.textContent = s; el.classList.remove("hidden");
+  clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.add("hidden"), 2600);
 }
 function avatar(id, name, has, cls) {
   const ini = esc([...(name || "?").trim()][0] || "?").toUpperCase();
@@ -369,13 +456,15 @@ function listTime(iso) {
   if (!iso) return "";
   const d = new Date(iso), now = new Date();
   if (d.toDateString() === now.toDateString()) return hhmm(d);
-  if (now - d < 6 * 864e5) return "周" + "日一二三四五六"[d.getDay()];
+  if (now - d < 6 * 864e5) return LANG === "zh" ? "周" + "日一二三四五六"[d.getDay()] : ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][d.getDay()];
   return d.getFullYear() === now.getFullYear() ? `${d.getMonth() + 1}/${d.getDate()}` : `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
 }
 function dayLabel(d) {
   const now = new Date();
-  if (d.toDateString() === now.toDateString()) return "今天";
-  if (d.toDateString() === new Date(now - 864e5).toDateString()) return "昨天";
+  if (d.toDateString() === now.toDateString()) return t("今天");
+  if (d.toDateString() === new Date(now - 864e5).toDateString()) return t("昨天");
+  if (LANG === "en") return d.toLocaleDateString("en-US", d.getFullYear() === now.getFullYear()
+    ? { month: "short", day: "numeric" } : { year: "numeric", month: "short", day: "numeric" });
   return d.getFullYear() === now.getFullYear() ? `${d.getMonth() + 1}月${d.getDate()}日` : `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
 }
 
@@ -392,6 +481,7 @@ async function pollState() {
       ready = true;
       $("login").classList.add("hidden");
       $("app").classList.remove("hidden");
+      api("/api/lang", "POST", { lang: LANG }).catch(() => {});
       loadChats();
       setInterval(pollFiles, 1000);
       setInterval(pollJobs, 1500);
@@ -408,7 +498,10 @@ async function sendPassword(e) {
 
 /* ================= 聊天列表 ================= */
 let chats = [], folder = "all", cur = null, stack = [];
-$("folders").innerHTML = FOLDERS.map(([k, n]) => `<button data-f="${k}" class="${k === "all" ? "on" : ""}">${n}</button>`).join("");
+function renderFolders() {
+  $("folders").innerHTML = FOLDERS.map(([k, n]) => `<button data-f="${k}" class="${k === folder ? "on" : ""}">${LANG === "en" ? t("筛选:" + n) : n}</button>`).join("");
+}
+renderFolders();
 $("folders").onclick = e => {
   const f = e.target.dataset.f; if (!f) return;
   folder = f;
@@ -428,10 +521,10 @@ function renderChats() {
     <div class="row ${cur && cur.chat === c.id ? "on" : ""}" onclick="openChat(${c.id})">
       ${avatar(c.id, c.name, c.photo, "big")}
       <div class="mid">
-        <div class="l1"><span class="nm">${c.kind === "频道" ? "📢 " : c.kind === "群组" ? "👥 " : ""}${esc(c.name)}</span><span class="tm">${listTime(c.date)}</span></div>
-        <div class="l2"><span class="pv">${c.protected ? "🔒 " : ""}${esc(c.preview)}</span>${c.unread ? `<span class="badge">${c.unread > 999 ? "999+" : c.unread}</span>` : ""}</div>
+        <div class="l1"><span class="nm">${c.kind === "频道" ? "📢 " : c.kind === "群组" ? "👥 " : ""}${esc(c.kind === "收藏夹" ? t("收藏夹") : c.name)}</span><span class="tm">${listTime(c.date)}</span></div>
+        <div class="l2"><span class="pv">${c.protected ? "🔒 " : ""}${c.preview_kind ? `[${t(c.preview_kind)}] ` : ""}${esc(c.preview)}</span>${c.unread ? `<span class="badge">${c.unread > 999 ? "999+" : c.unread}</span>` : ""}</div>
       </div>
-    </div>`).join("") || '<div class="empty">没有</div>';
+    </div>`).join("") || `<div class="empty">${t("没有")}</div>`;
 }
 
 /* ================= 打开聊天 / 评论 / 跳转 ================= */
@@ -480,9 +573,9 @@ async function openThreadById(chat, postId, commentId) {
   let r;
   try { r = await api(`/api/messages?chat=${chat}&post=0&offset=${postId + 1}&limit=12`); } catch (e) { return toast(e.message); }
   const item = r.items.find(it => it.ids.includes(postId));
-  if (!item) return toast("找不到这条帖子");
+  if (!item) return toast(t("找不到这条帖子"));
   tagPage([item], 0);
-  if (!item.thread) { toast("这条帖子没有评论区"); return jumpTo(chat, postId); }
+  if (!item.thread) { toast(t("这条帖子没有评论区")); return jumpTo(chat, postId); }
   const v = newView(chat, { post: item.thread, postItem: item, target: commentId });
   if (commentId) { v.older = commentId + 1; v.newer = commentId; } else v.newer = 0;
   show(v, true);
@@ -495,22 +588,22 @@ function goBack() {
 }
 function renderChat() {
   const v = cur, c = v.c;
-  const tags = [c.kind, c.joined === false && "未加入", c.protected && "禁止保存", c.comments && "有评论区"].filter(Boolean).join(" · ");
-  const title = v.search ? `搜索：${esc(v.search)}` : v.post ? "评论" : esc(c.name);
-  const sub = v.post ? esc(c.name) + (v.postItem && v.postItem.replies ? ` · ${v.postItem.replies} 条评论` : "") : v.search ? esc(c.name) + " · 点消息跳到原位置" : esc(tags);
+  const tags = [t(c.kind), c.joined === false && t("未加入"), c.protected && t("禁止保存"), c.comments && t("有评论区")].filter(Boolean).join(" · ");
+  const title = v.search ? t("搜索：") + esc(v.search) : v.post ? t("评论") : esc(c.name);
+  const sub = v.post ? esc(c.name) + (v.postItem && v.postItem.replies ? ` · ${v.postItem.replies}${t("条评论")}` : "") : v.search ? esc(c.name) + t("· 点消息跳到原位置") : esc(tags);
   $("chat").innerHTML = `
     <div class="head">
-      ${stack.length ? `<button class="icon" onclick="goBack()" title="返回（Esc）">←</button>` : ""}
+      ${stack.length ? `<button class="icon" onclick="goBack()" title="${t("返回（Esc）")}">←</button>` : ""}
       ${avatar(c.id, c.name, c.photo, "mid")}
       <div class="title grow"><div class="t1">${title}</div><div class="t2">${sub}</div></div>
       <div class="act">
-        ${v.post ? "" : `<button class="icon" onclick="askSearch()" title="在这个聊天里搜索">🔍</button>`}
-        <button class="btn" onclick="toggleSelect()" id="selbtn">${v.selecting ? "取消选择" : "选择"}</button>
-        ${v.search ? "" : `<button class="btn" onclick="openModal()">⬇ ${v.post ? "下载全部评论" : "下载全部"}</button>`}
+        ${v.post ? "" : `<button class="icon" onclick="askSearch()" title="${t("在这个聊天里搜索")}">🔍</button>`}
+        <button class="btn" onclick="toggleSelect()" id="selbtn">${t(v.selecting ? "取消选择" : "选择")}</button>
+        ${v.search ? "" : `<button class="btn" onclick="openModal()">⬇ ${t(v.post ? "下载全部评论" : "下载全部")}</button>`}
       </div>
     </div>
     <div id="scroller"><div id="msgs"></div></div>
-    <button id="tobottom" class="hidden" onclick="toEnd()" title="到最新">⌄</button>
+    <button id="tobottom" class="hidden" onclick="toEnd()" title="${t("到最新")}">⌄</button>
     <div class="selbar ${v.selecting ? "" : "hidden"}" id="selbar"></div>`;
   $("scroller").onscroll = onScroll;
   $("msgs").onclick = onMsgClick;
@@ -587,15 +680,15 @@ function scrollToMsg(id, flash) {
   let i = v.items.findIndex(it => it.ids.includes(id));
   if (i < 0) {
     i = v.items.findIndex(it => it.ids[0] > id); if (i < 0) i = v.items.length - 1;
-    if (flash) toast("这条消息不存在或已被删除，已跳到附近");
+    if (flash) toast(t("这条消息不存在或已被删除，已跳到附近"));
   }
   const row = document.querySelector(`.msg[data-i="${i}"]`); if (!row) return;
   row.scrollIntoView({ block: "center" });
   if (flash) { row.classList.remove("flash"); void row.offsetWidth; row.classList.add("flash"); }
 }
 function askSearch() {
-  $("modalBox").innerHTML = `<h3>在「${esc(cur.c.name)}」里搜索</h3>
-    <form id="sform" style="display:flex;gap:8px"><input id="sq" class="sinput" placeholder="关键词 或 #话题" value="${esc(cur.search || "")}"><button class="btn fill">搜索</button></form>`;
+  $("modalBox").innerHTML = `<h3>${t("在这个聊天里搜索")}</h3>
+    <form id="sform" style="display:flex;gap:8px"><input id="sq" class="sinput" placeholder="${t("关键词 或 #话题")}" value="${esc(cur.search || "")}"><button class="btn fill">${t("搜索")}</button></form>`;
   $("modal").classList.remove("hidden");
   $("sq").focus();
   $("sform").onsubmit = e => { e.preventDefault(); const q = $("sq").value.trim(); closeModal(); if (q) openSearch(q); };
@@ -612,7 +705,7 @@ function clickLink(a) {
 async function openLink(url) {
   url = (url || "").trim();
   if (!isTgLink(url)) return openExternal(url);
-  toast("正在打开…");
+  toast(t("正在打开…"));
   let r;
   try { r = await api("/api/resolve", "POST", { url }); } catch (e) { return toast(e.message); }
   if (r.external) return openExternal(r.external);
@@ -623,23 +716,23 @@ async function openLink(url) {
   if (!chats.some(x => x.id === c.id)) extra.set(c.id, c);
   if (r.msg && r.comment) return openThreadById(c.id, r.msg, r.comment);
   if (r.msg) return jumpTo(c.id, r.msg);
-  if (cur && cur.chat === c.id && !cur.post && !cur.search) return toast("就是当前这个聊天");
+  if (cur && cur.chat === c.id && !cur.post && !cur.search) return toast(t("就是当前这个聊天"));
   const v = newView(c.id); v.older = 0;
   show(v, true);
 }
 function openExternal(url) {
   let u = url;
   if (!/^[a-z][a-z0-9+.-]*:/i.test(u)) u = "http://" + u.replace(/^\/+/, "");  // example.com → http://example.com
-  if (!/^(https?|mailto):/i.test(u)) return toast("这种链接打不开：" + url);
+  if (!/^(https?|mailto):/i.test(u)) return toast(t("这种链接打不开：") + url);
   api("/api/openurl", "POST", { url: u }).catch(e => toast(e.message));
 }
 function inviteDialog(inv) {  // 没加入的私有群/频道邀请链接：和 TG 一样先问要不要加入
   $("modalBox").innerHTML = `<h3>${esc(inv.title)}</h3>
-    <div style="color:var(--sub);margin-bottom:10px">${inv.channel ? "频道" : "群组"} · ${inv.count ?? "?"} 人${inv.request ? " · 需要管理员同意" : ""}</div>
+    <div style="color:var(--sub);margin-bottom:10px">${t(inv.channel ? "频道" : "群组")} · ${inv.count ?? "?"}${t("人")}${inv.request ? " · " + t("需要管理员同意") : ""}</div>
     ${inv.about ? `<div class="urlbox" style="white-space:pre-wrap">${esc(inv.about)}</div>` : ""}
-    <div style="color:var(--sub);font-size:13px">你还没加入，加入后才能看里面的消息。</div>
-    <div class="foot"><button class="btn" onclick="closeModal()">取消</button>
-      <button class="btn fill" id="joinBtn">${inv.request ? "申请加入" : inv.channel ? "加入频道" : "加入群组"}</button></div>`;
+    <div style="color:var(--sub);font-size:13px">${t("你还没加入，加入后才能看里面的消息。")}</div>
+    <div class="foot"><button class="btn" onclick="closeModal()">${t("取消")}</button>
+      <button class="btn fill" id="joinBtn">${t(inv.request ? "申请加入" : inv.channel ? "加入频道" : "加入群组")}</button></div>`;
   $("joinBtn").onclick = async () => {
     $("joinBtn").disabled = true;
     let r;
@@ -654,8 +747,8 @@ function inviteDialog(inv) {  // 没加入的私有群/频道邀请链接：和 
   $("modal").classList.remove("hidden");
 }
 function confirmOpen(url) {
-  $("modalBox").innerHTML = `<h3>打开这个链接？</h3><div class="urlbox">${esc(url)}</div>
-    <div class="foot"><button class="btn" onclick="closeModal()">取消</button><button class="btn fill" id="goUrl">打开</button></div>`;
+  $("modalBox").innerHTML = `<h3>${t("打开这个链接？")}</h3><div class="urlbox">${esc(url)}</div>
+    <div class="foot"><button class="btn" onclick="closeModal()">${t("取消")}</button><button class="btn fill" id="goUrl">${t("打开")}</button></div>`;
   $("goUrl").onclick = () => { closeModal(); openExternal(url); };
   $("modal").classList.remove("hidden");
 }
@@ -703,12 +796,12 @@ function richText(text, ents) {
 function thumbUrl(m, w) { return `/api/thumb?t=${TOKEN}&chat=${cur.chat}&post=${m.vp}&id=${m.id}&w=${w}`; }
 function dlState(m) {
   const s = m.state || (m.done ? { s: "done" } : null);
-  if (!s) return `<span class="dlb" data-act="dl" title="下载">⬇</span>`;
-  if (s.s === "done") return `<span class="dlb ok" data-act="open" title="已下载，点击打开">✓</span>`;
-  if (s.s === "fail") return `<span class="dlb bad" data-act="dl" title="失败，点击重试">!</span>`;
-  if (s.s === "queued") return `<span class="dlb" data-act="none" title="排队中">⋯</span>`;
+  if (!s) return `<span class="dlb" data-act="dl" title="${t("下载")}">⬇</span>`;
+  if (s.s === "done") return `<span class="dlb ok" data-act="open" title="${t("已下载，点击打开")}">✓</span>`;
+  if (s.s === "fail") return `<span class="dlb bad" data-act="dl" title="${t("失败，点击重试")}">!</span>`;
+  if (s.s === "queued") return `<span class="dlb" data-act="none" title="${t("排队中")}">⋯</span>`;
   const p = s.size ? Math.floor(s.got / s.size * 100) : 0;
-  return `<span class="dlb ring" style="--p:${p}" data-act="none" title="下载中"><b>${p}%</b></span>`;
+  return `<span class="dlb ring" style="--p:${p}" data-act="none" title="${t("下载中")}"><b>${p}%</b></span>`;
 }
 function tileHtml(m, n) {
   const big = n === 1, sticker = m.kind === "sticker", round = m.kind === "round";
@@ -717,20 +810,20 @@ function tileHtml(m, n) {
   const video = ["video", "gif", "round"].includes(m.kind);
   const info = m.kind === "gif" ? "GIF" : video ? [dur(m.duration), size(m.size)].filter(Boolean).join(" · ") : "";
   return `<div class="tile ${round ? "round" : ""} ${sticker ? "stk" : ""}" data-key="${m.key}" style="${ratio}">
-    ${img}${video && m.kind !== "gif" ? '<span class="play">▶</span>' : ""}${info ? `<span class="info">${info}</span>` : ""}${m.dup ? '<span class="dup" title="这个文件前面已经出现过，是频道重复发的">重复</span>' : ""}
+    ${img}${video && m.kind !== "gif" ? '<span class="play">▶</span>' : ""}${info ? `<span class="info">${info}</span>` : ""}${m.dup ? `<span class="dup" title="${t("这个文件前面已经出现过，是频道重复发的")}">${t("重复")}</span>` : ""}
     <span class="st">${dlState(m)}</span></div>`;
 }
 const FILE_ICON = { audio: "▶", video: "🎬", image: "🖼", pdf: "📕", text: "📝", info: "📄" };
 function fileHtml(m) {
   const icon = FILE_ICON[previewKind(m)] || "📄";
-  const name = m.name || (m.kind === "voice" ? "语音消息" : m.label);
-  return `<div class="frow" data-key="${m.key}" title="点击预览 / 播放；右下角 ⬇ 下载">
+  const name = m.name || (m.kind === "voice" ? t("语音消息") : t(m.label));
+  return `<div class="frow" data-key="${m.key}" title="${t("点击预览 / 播放；右下角 ⬇ 下载")}">
     <div class="fic"><span class="ico" data-ico="${icon}">${icon}</span><span class="st">${dlState(m)}</span></div>
-    <div style="min-width:0"><div class="fn" title="${esc(name)}">${esc(name)}${m.dup ? '<span class="dup" title="这个文件前面已经出现过">重复</span>' : ""}</div><div class="fs">${[size(m.size), dur(m.duration)].filter(Boolean).join(" · ")}</div></div>
+    <div style="min-width:0"><div class="fn" title="${esc(name)}">${esc(name)}${m.dup ? `<span class="dup" title="${t("这个文件前面已经出现过")}">${t("重复")}</span>` : ""}</div><div class="fs">${[size(m.size), dur(m.duration)].filter(Boolean).join(" · ")}</div></div>
   </div>`;
 }
 function quoteHtml(q) {  // 回复引用：点了跳到被回复的那条
-  return `<div class="quote" data-act="reply" data-v="${q.id}" title="跳到这条消息"><b>${esc(q.sender || "回复")}</b><span>${esc(q.text || "[消息]")}</span></div>`;
+  return `<div class="quote" data-act="reply" data-v="${q.id}" title="${t("跳到这条消息")}"><b>${esc(q.sender || t("回复"))}</b><span>${q.kind ? `[${t(q.kind)}] ` : ""}${esc(q.text || (q.kind ? "" : t("[消息]")))}</span></div>`;
 }
 function webHtml(w, it) {  // 链接预览卡片：点了打开链接
   return `<div class="web" data-act="url" data-v="${esc(w.url)}" title="${esc(w.url)}">
@@ -741,20 +834,20 @@ function webHtml(w, it) {  // 链接预览卡片：点了打开链接
 function kbHtml(rows) {  // 帖子下面的按钮：链接按钮能点，回调按钮要给机器人发消息，这里不做
   return `<div class="kb">${rows.map(r => `<div class="kbr">${r.map(b => b.url
     ? `<button class="kbb" data-act="url" data-v="${esc(b.url)}" title="${esc(b.url)}">${esc(b.text)} <small>↗</small></button>`
-    : `<button class="kbb off" title="这种按钮要给机器人发消息，在手机上点">${esc(b.text)}</button>`).join("")}</div>`).join("")}</div>`;
+    : `<button class="kbb off" title="${t("这种按钮要给机器人发消息，在手机上点")}">${esc(b.text)}</button>`).join("")}</div>`).join("")}</div>`;
 }
 function bubbleHtml(it, idx, opts) {
   const visual = it.media.filter(m => ["photo", "video", "gif", "round", "sticker"].includes(m.kind));
   const files = it.media.filter(m => !visual.includes(m));
   const onlySticker = visual.length === 1 && ["sticker", "round"].includes(visual[0].kind) && !it.text && !files.length && !it.reply;
   const n = visual.length;
-  const t = new Date(it.date);
-  const meta = `${it.views != null ? `<span>👁 ${it.views >= 1000 ? (it.views / 1000).toFixed(1) + "K" : it.views}</span>` : ""}${it.author ? `<span>${esc(it.author)}</span>` : ""}${it.edited ? "<span>已编辑</span>" : ""}<span>${hhmm(t)}</span>`;
+  const when = new Date(it.date);
+  const meta = `${it.views != null ? `<span>👁 ${it.views >= 1000 ? (it.views / 1000).toFixed(1) + "K" : it.views}</span>` : ""}${it.author ? `<span>${esc(it.author)}</span>` : ""}${it.edited ? `<span>${t("已编辑")}</span>` : ""}<span>${hhmm(when)}</span>`;
   const mediaOnly = n && !it.text && !files.length && !it.web;
   const who = opts.showName ? `<div class="who" style="color:${NAMECOLORS[Math.abs(it.sender_id || 0) % 7]}">${esc(it.sender)}</div>` : "";
   const fwd = it.fwd ? (it.fwd_link
-    ? `<div class="fwd lnk2" data-act="url" data-v="${esc(it.fwd_link)}" title="打开原消息">转发自 <b>${esc(it.fwd)}</b></div>`
-    : `<div class="fwd">转发自 <b>${esc(it.fwd)}</b></div>`) : "";
+    ? `<div class="fwd lnk2" data-act="url" data-v="${esc(it.fwd_link)}" title="${t("打开原消息")}">${t("转发自")} <b>${esc(it.fwd)}</b></div>`
+    : `<div class="fwd">${t("转发自")} <b>${esc(it.fwd)}</b></div>`) : "";
   // 单张竖图/竖视频：气泡跟着变窄（和 TG 一样），最高 460px
   const v0 = visual[0], ratio = n === 1 && v0.w && v0.h ? v0.w / v0.h : 1;
   const width = n === 1 && ratio < 0.91 ? `style="width:${Math.max(240, Math.round(460 * Math.max(ratio, 0.55)))}px"` : "";
@@ -767,7 +860,7 @@ function bubbleHtml(it, idx, opts) {
     ${it.text ? `<div class="text">${richText(it.text, it.ents)}</div>` : ""}
     ${it.web ? webHtml(it.web, it) : ""}
     <div class="meta ${mediaOnly ? "onmedia" : ""}">${meta}</div>
-    ${it.replies && !cur.post ? `<div class="cmts" data-act="thread" data-i="${idx}">💬 ${it.replies} 条评论<span class="grow"></span>›</div>` : ""}
+    ${it.replies && !cur.post ? `<div class="cmts" data-act="thread" data-i="${idx}">💬 ${it.replies}${t("条评论")}<span class="grow"></span>›</div>` : ""}
   </div>`;
 }
 function rowHtml(it, i, cls, inner) {
@@ -782,7 +875,7 @@ function renderMsgs() {
   let html = `<div id="ldOlder" class="loadtop ${v.loadingOlder ? "" : "hidden"}"><div class="spinner"></div></div>`, lastDay = "";
   if (v.post && v.postItem && v.older === null) {  // 评论区从头看时，顶部先放原帖
     v.postItem.media.forEach(m => { m.dup = false; if (m.fid) v.seenFid.add(m.fid); v.media.set(m.key, { m, it: v.postItem }); });
-    html += rowHtml(v.postItem, -1, "", `<div class="bcol">${bubbleHtml(v.postItem, -1, { showName: true })}</div>`) + `<div class="sep"><span>评论</span></div>`;
+    html += rowHtml(v.postItem, -1, "", `<div class="bcol">${bubbleHtml(v.postItem, -1, { showName: true })}</div>`) + `<div class="sep"><span>${t("评论")}</span></div>`;
   }
   v.items.forEach((it, i) => {
     const d = new Date(it.date), day = d.toDateString();
@@ -800,7 +893,7 @@ function renderMsgs() {
   html += `<div id="ldNewer" class="loadtop ${v.loadingNewer ? "" : "hidden"}"><div class="spinner"></div></div>`;
   if (v.error) html += `<div class="empty err">${esc(v.error)}</div>`;
   else if (!v.items.length && v.older === null && v.newer === null && !v.loadingOlder && !v.loadingNewer)
-    html += `<div class="empty" style="color:#fff">${v.search ? "没有搜到" : v.post ? "还没有评论" : "没有消息"}</div>`;
+    html += `<div class="empty" style="color:#fff">${t(v.search ? "没有搜到" : v.post ? "还没有评论" : "没有消息")}</div>`;
   box.innerHTML = html;
   box.parentElement.classList.toggle("selecting", v.selecting);
   markPlaying();
@@ -843,13 +936,13 @@ function onMsgMenu(e) {
   const items = [];
   if (el) {
     const { m } = cur.media.get(el.dataset.key);
-    items.push([previewKind(m) === "audio" ? "播放" : "预览", () => preview(m, it)]);
-    if (isDone(m)) { items.push(["用电脑上的程序打开", () => openRel(m.rel)], ["在文件夹中显示", () => openRel(m.rel, true)]); }
-    else items.push(["下载这个文件", () => download([m], it)]);
+    items.push([t(previewKind(m) === "audio" ? "播放" : "预览"), () => preview(m, it)]);
+    if (isDone(m)) { items.push([t("用电脑上的程序打开"), () => openRel(m.rel)], [t("在文件夹中显示"), () => openRel(m.rel, true)]); }
+    else items.push([t("下载这个文件"), () => download([m], it)]);
   }
-  if (it.media.length > 1) items.push([`下载这条的全部 ${it.media.length} 个文件`, () => download(it.media, it)]);
-  if (it !== cur.postItem) items.push([cur.selecting ? "选中 / 取消选中" : "选择", () => { if (!cur.selecting) toggleSelect(); toggleSel(it); }]);
-  if (it.text) items.push(["复制文字", () => navigator.clipboard.writeText(it.text).then(() => toast("已复制"))]);
+  if (it.media.length > 1) items.push([LANG === "en" ? `Download all ${it.media.length} files here` : `下载这条的全部 ${it.media.length} 个文件`, () => download(it.media, it)]);
+  if (it !== cur.postItem) items.push([t(cur.selecting ? "选中 / 取消选中" : "选择"), () => { if (!cur.selecting) toggleSelect(); toggleSel(it); }]);
+  if (it.text) items.push([t("复制文字"), () => navigator.clipboard.writeText(it.text).then(() => toast(t("已复制")))]);
   showMenu(e.clientX, e.clientY, items);
 }
 function showMenu(x, y, items) {
@@ -875,7 +968,7 @@ addEventListener("keydown", e => {
 const isDone = m => (m.state ? m.state.s === "done" : m.done);
 async function download(ms, it) {
   const todo = ms.filter(m => !isDone(m) && !(m.state && ["queued", "loading"].includes(m.state.s)));
-  if (!todo.length) return toast("已经下载过了");
+  if (!todo.length) return toast(t("已经下载过了"));
   todo.forEach(m => { m.state = { s: "queued" }; updateKey(m.key); });
   try {
     await api("/api/start", "POST", { targets: [{ chat: cur.chat, post: todo[0].vp, ids: todo.map(m => m.id) }], scope: "posts" });
@@ -903,7 +996,7 @@ async function pollFiles() {
 function toggleSelect() {
   cur.selecting = !cur.selecting;
   if (!cur.selecting) cur.sel.clear();
-  $("selbtn").textContent = cur.selecting ? "取消选择" : "选择";
+  $("selbtn").textContent = t(cur.selecting ? "取消选择" : "选择");
   $("selbar").classList.toggle("hidden", !cur.selecting);
   renderMsgs(); renderSelbar();
 }
@@ -917,12 +1010,12 @@ function renderSelbar() {
   const v = cur, bar = $("selbar"); if (!bar) return;
   const n = v.sel.size, files = [...v.sel.values()].reduce((a, it) => a + it.media.length, 0);
   const withCmt = !v.post && v.c.comments;
-  bar.innerHTML = `<b>已选 ${n} 条</b><span style="color:var(--sub);font-size:14px">${files} 个文件</span>
-    <button class="btn" onclick="selectAllLoaded()">全选已加载</button>
-    ${withCmt ? `<label><input type="checkbox" id="selcmt">连评论区一起下</label>` : ""}
+  bar.innerHTML = `<b>${t("已选")}${n}${t("条")}</b><span style="color:var(--sub);font-size:14px">${files}${t("个文件")}</span>
+    <button class="btn" onclick="selectAllLoaded()">${t("全选已加载")}</button>
+    ${withCmt ? `<label><input type="checkbox" id="selcmt">${t("连评论区一起下")}</label>` : ""}
     <span class="grow"></span>
-    <button class="btn" onclick="toggleSelect()">取消</button>
-    <button class="btn fill" onclick="downloadSelected()" ${n ? "" : "disabled"}>⬇ 下载选中的</button>`;
+    <button class="btn" onclick="toggleSelect()">${t("取消")}</button>
+    <button class="btn fill" onclick="downloadSelected()" ${n ? "" : "disabled"}>${t("⬇ 下载选中的")}</button>`;
 }
 function selectAllLoaded() { cur.items.forEach(it => cur.sel.set(it.ids[0], it)); renderMsgs(); renderSelbar(); }
 async function downloadSelected() {
@@ -930,29 +1023,29 @@ async function downloadSelected() {
   const withCmt = $("selcmt") && $("selcmt").checked;
   try {
     await api("/api/start", "POST", { targets: [{ chat: v.chat, post: v.post, ids: its.flatMap(it => it.ids) }], scope: withCmt ? "both" : "posts" });
-    toast(`已开始下载 ${its.length} 条`);
+    toast(LANG === "en" ? `Started downloading ${its.length} messages` : `已开始下载 ${its.length} 条`);
     toggleSelect();
   } catch (e) { toast(e.message); }
 }
 
 /* 下载全部（弹窗） */
-const defaults = () => Object.assign({ scope: "both", types: TYPES.filter(t => t[0] !== "sticker").map(t => t[0]), text: true, max: "" }, JSON.parse(localStorage.getItem("tgdl.opts") || "{}"));
+const defaults = () => Object.assign({ scope: "both", types: TYPES.filter(x => x[0] !== "sticker").map(x => x[0]), text: true, max: "" }, JSON.parse(localStorage.getItem("tgdl.opts") || "{}"));
 function openModal() {
   const v = cur, o = defaults(), showScope = !v.post && v.c.comments;
   $("modalBox").innerHTML = `
-    <h3>${v.post ? "下载这条帖子的全部评论" : "下载全部 · " + esc(v.c.name)}</h3>
-    ${showScope ? `<div class="opt"><div class="lb">内容</div><div class="chips">
-      ${[["both", "帖子 + 评论区"], ["comments", "只要评论区"], ["posts", "只要帖子"]].map(([k, n]) => `<label><input type="radio" name="scope" value="${k}" ${o.scope === k ? "checked" : ""}>${n}</label>`).join("")}
+    <h3>${v.post ? t("下载这条帖子的全部评论") : t("下载全部 ·") + " " + esc(v.c.name)}</h3>
+    ${showScope ? `<div class="opt"><div class="lb">${t("内容")}</div><div class="chips">
+      ${[["both", "帖子 + 评论区"], ["comments", "只要评论区"], ["posts", "只要帖子"]].map(([k, n]) => `<label><input type="radio" name="scope" value="${k}" ${o.scope === k ? "checked" : ""}>${t(n)}</label>`).join("")}
     </div></div>` : ""}
-    <div class="opt"><div class="lb">文件类型</div><div class="chips" id="mtypes">
-      ${TYPES.map(([k, n]) => `<label><input type="checkbox" value="${k}" ${o.types.includes(k) ? "checked" : ""}>${n}</label>`).join("")}
+    <div class="opt"><div class="lb">${t("文件类型")}</div><div class="chips" id="mtypes">
+      ${TYPES.map(([k, n]) => `<label><input type="checkbox" value="${k}" ${o.types.includes(k) ? "checked" : ""}>${t(n)}</label>`).join("")}
     </div></div>
-    <div class="opt"><div class="lb">其他</div><div class="chips" style="align-items:center">
-      <label><input type="checkbox" id="mtext" ${o.text ? "checked" : ""}>导出文字记录</label>
-      <span style="font-size:14px;margin-left:6px">跳过大于 <input class="numin" id="mmax" type="number" min="0" placeholder="不限" value="${o.max}"> MB</span>
+    <div class="opt"><div class="lb">${t("其他")}</div><div class="chips" style="align-items:center">
+      <label><input type="checkbox" id="mtext" ${o.text ? "checked" : ""}>${t("导出文字记录")}</label>
+      <span style="font-size:14px;margin-left:6px">${t("跳过大于")} <input class="numin" id="mmax" type="number" min="0" placeholder="${t("不限")}" value="${o.max}"> MB</span>
     </div></div>
-    <div style="color:var(--sub);font-size:13px">已经下过的文件会自动跳过，中途停了下次接着下。</div>
-    <div class="foot"><button class="btn" onclick="closeModal()">取消</button><button class="btn fill" onclick="startAll()">开始下载</button></div>`;
+    <div style="color:var(--sub);font-size:13px">${t("已经下过的文件会自动跳过，中途停了下次接着下。")}</div>
+    <div class="foot"><button class="btn" onclick="closeModal()">${t("取消")}</button><button class="btn fill" onclick="startAll()">${t("开始下载")}</button></div>`;
   $("modal").classList.remove("hidden");
 }
 function closeModal() { $("modal").classList.add("hidden"); }
@@ -988,18 +1081,18 @@ async function pollJobs() {
     const run = j.status === "下载中";
     const pct = j.status === "完成" ? 100 : j.total ? Math.round(j.done / j.total * 100) : 0;
     return `<div class="job">
-      <div class="jt"><b title="${esc(j.title)}">${esc(j.title)}</b><span class="chip ${statusCls(j.status)}">${j.status}</span></div>
+      <div class="jt"><b title="${esc(j.title)}">${esc(j.title)}</b><span class="chip ${statusCls(j.status)}">${t(j.status)}</span></div>
       <div class="bar"><i style="width:${pct}%"></i></div>
-      <div class="js"><span>${j.done} / ${j.total} 个</span><span>${size(j.bytes) || "0 KB"}</span>${run ? `<span>${size(Math.max(0, sp.v)) || "0 KB"}/s</span>` : ""}
-        ${j.skip ? `<span>跳过已有 ${j.skip}</span>` : ""}${j.dup ? `<span title="频道把同一个文件发了多遍，只存一份">去重 ${j.dup}</span>` : ""}${j.fail ? `<span style="color:var(--red)">失败 ${j.fail}</span>` : ""}${!j.picked && j.scan ? `<span>扫描 ${j.scan} 条</span>` : ""}</div>
+      <div class="js"><span>${j.done} / ${j.total}${t("个")}</span><span>${size(j.bytes) || "0 KB"}</span>${run ? `<span>${size(Math.max(0, sp.v)) || "0 KB"}/s</span>` : ""}
+        ${j.skip ? `<span>${t("跳过已有")}${j.skip}</span>` : ""}${j.dup ? `<span title="${t("频道把同一个文件发了多遍，只存一份")}">${t("去重")}${j.dup}</span>` : ""}${j.fail ? `<span style="color:var(--red)">${t("失败")}${j.fail}</span>` : ""}${!j.picked && j.scan ? `<span>${t("扫描")}${j.scan}${t("条")}</span>` : ""}</div>
       ${j.active.map(a => { const fp = a.size ? Math.round(a.got / a.size * 100) : 0; return `<div class="af"><span title="${esc(a.name)}">${esc(a.name)}</span><div class="bar"><i style="width:${fp}%"></i></div><span>${fp}%</span></div>`; }).join("")}
       ${j.logs.length ? `<div class="jl" title="${esc(j.logs.join("\n"))}">${esc(j.logs[j.logs.length - 1])}</div>` : ""}
       <div class="ja">
-        ${j.out ? `<button class="btn" onclick='openAbs(${esc(JSON.stringify(j.out))})'>打开文件夹</button>` : ""}
-        ${run || j.status === "排队中" ? `<button class="btn red" onclick="api('/api/cancel','POST',{id:${j.id}})">停止</button>` : ""}
+        ${j.out ? `<button class="btn" onclick='openAbs(${esc(JSON.stringify(j.out))})'>${t("打开文件夹")}</button>` : ""}
+        ${run || j.status === "排队中" ? `<button class="btn red" onclick="api('/api/cancel','POST',{id:${j.id}})">${t("停止")}</button>` : ""}
       </div>
     </div>`;
-  }).join("") : '<div class="empty">还没有下载任务<br><br>在聊天里点图片/文件上的 ⬇，或者点右上角“下载全部”</div>';
+  }).join("") : `<div class="empty">${t("还没有下载任务")}<br><br>${t("在聊天里点图片/文件上的 ⬇，或者点右上角“下载全部”")}</div>`;
 }
 function openRel(rel, reveal) { api("/api/open", "POST", { rel, reveal: reveal ? 1 : 0 }).catch(e => toast(e.message)); }
 function openAbs(path) { api("/api/open", "POST", { path }).catch(e => toast(e.message)); }
@@ -1035,7 +1128,7 @@ function stopStage() {  // 换下一个/关掉时一定要停掉，不然视频�
   st.innerHTML = "";
 }
 function infoCard(m, why) {
-  return `<div class="vinfo"><div class="big">${FILE_ICON[previewKind(m)] || "📄"}</div><b>${esc(m.name || m.label)}</b>
+  return `<div class="vinfo"><div class="big">${FILE_ICON[previewKind(m)] || "📄"}</div><b>${esc(m.name || t(m.label))}</b>
     <span>${[size(m.size), m.mime].filter(Boolean).join(" · ")}</span><div style="margin-top:12px;color:#ccc">${esc(why)}</div></div>`;
 }
 async function openViewer(key) {
@@ -1052,7 +1145,7 @@ async function openViewer(key) {
   if (k === "photo" || k === "image" || k === "thumb") {
     const img = new Image();
     img.onload = ready;
-    img.onerror = () => { ready(); st.innerHTML = infoCard(m, "图片加载失败"); };
+    img.onerror = () => { ready(); st.innerHTML = infoCard(m, t("图片加载失败")); };
     img.src = k === "photo" ? `/api/photo?t=${TOKEN}&chat=${cur.chat}&post=${m.vp}&id=${m.id}` : k === "thumb" ? thumbUrl(m, 640) : streamUrl(m);
     st.appendChild(img);
   } else if (k === "video") {
@@ -1061,7 +1154,7 @@ async function openViewer(key) {
     if (m.kind === "gif" || m.kind === "sticker") { v.loop = true; v.muted = true; }
     if (m.thumb) v.poster = thumbUrl(m, 640);
     v.onloadeddata = ready;
-    v.onerror = () => { ready(); if (viewing === key) st.innerHTML = infoCard(m, "这个视频格式浏览器放不了，点上面“下载”后用电脑上的播放器打开"); };
+    v.onerror = () => { ready(); if (viewing === key) st.innerHTML = infoCard(m, t("这个视频格式浏览器放不了，点上面“下载”后用电脑上的播放器打开")); };
     v.src = streamUrl(m);
     st.appendChild(v);
     v.focus();
@@ -1075,11 +1168,11 @@ async function openViewer(key) {
       if (viewing !== key) return;
       let txt;  // 先按 UTF-8，不对再按 GBK（国内很多 txt 是 GBK）
       try { txt = new TextDecoder("utf-8", { fatal: true }).decode(buf, { stream: true }); } catch (e) { txt = new TextDecoder("gbk").decode(buf); }
-      st.innerHTML = `<pre class="vtext">${esc(txt)}${m.size > 262144 ? "\n\n…… 只显示前 256 KB，完整内容请下载" : ""}</pre>`;
-    } catch (e) { st.innerHTML = infoCard(m, "读取失败：" + e.message); }
+      st.innerHTML = `<pre class="vtext">${esc(txt)}${m.size > 262144 ? "\n\n" + t("…… 只显示前 256 KB，完整内容请下载") : ""}</pre>`;
+    } catch (e) { st.innerHTML = infoCard(m, t("读取失败：") + e.message); }
     ready();
   } else {
-    st.innerHTML = infoCard(m, "这种文件不能在线预览，点上面“下载”");
+    st.innerHTML = infoCard(m, t("这种文件不能在线预览，点上面“下载”"));
     ready();
   }
 }
@@ -1087,7 +1180,7 @@ function syncViewerButtons() {
   const rec = cur && cur.media.get(viewing); if (!rec) return;
   const { m, it } = rec, done = isDone(m), busy = m.state && ["queued", "loading"].includes(m.state.s);
   $("vdl").classList.toggle("hidden", done);
-  $("vdl").textContent = busy ? (m.state.s === "loading" && m.state.size ? `下载中 ${Math.floor(m.state.got / m.state.size * 100)}%` : "排队中…") : "⬇ 下载";
+  $("vdl").textContent = busy ? (m.state.s === "loading" && m.state.size ? `${t("下载中")} ${Math.floor(m.state.got / m.state.size * 100)}%` : t("排队中") + "…") : t("⬇ 下载");
   $("vdl").onclick = () => download([m], it);
   $("vopen").classList.toggle("hidden", !done); $("vopen").onclick = () => openRel(m.rel);
   $("vreveal").classList.toggle("hidden", !done); $("vreveal").onclick = () => openRel(m.rel, true);
@@ -1106,7 +1199,7 @@ function playAudio(m, it) {
   playing = m.key;
   a.src = streamUrl(m);
   a.play().catch(() => {});
-  $("pname").textContent = m.name || (m.kind === "voice" ? "语音消息" : "音频");
+  $("pname").textContent = m.name || t(m.kind === "voice" ? "语音消息" : "音频");
   $("psub").textContent = `${it.sender || cur.c.name} · ${new Date(it.date).toLocaleString()}`;
   $("player").classList.remove("hidden");
   document.body.classList.add("hasplayer");
@@ -1132,6 +1225,7 @@ function markPlaying() {  // 正在放的那行图标变成 ⏸
 $("paudio").onplay = $("paudio").onpause = markPlaying;
 
 addEventListener("mouseup", e => { if (e.button === 3 && cur && stack.length) { e.preventDefault(); goBack(); } });
+applyStaticLang();
 addEventListener("pagehide", () => navigator.sendBeacon(`/api/bye?t=${TOKEN}`));
 pollState();
 </script>

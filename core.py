@@ -51,6 +51,53 @@ JOBS = 8                  # 每个任务同时处理几个文件（真正的限�
 log = logging.getLogger("tg")
 
 
+
+# ---------------- 界面语言 ----------------
+LANG = "zh"  # 由界面通过 /api/lang 设置
+
+EN = {
+    "完成：新下载 {ok} 个，跳过已有 {skip} 个": "Done: {ok} new, {skip} already had",
+    "（其中 {dup} 个是频道重复发的，没重复下）": " ({dup} were reposts, not downloaded again)",
+    "，失败 {fail} 个": ", {fail} failed",
+    "已停止。下次再下同一个会跳过已下好的文件": "Stopped. Re-running skips whatever is already downloaded",
+    "出错：{e}": "Error: {e}",
+    "下载全部消息": "Downloading all messages",
+    "只下评论区": "Downloading comments only",
+    "下载全部帖子 + 评论区": "Downloading all posts + comments",
+    "（开了禁止保存，照样下）": " (save-restricted, downloading anyway)",
+    "帖子 {id} 的评论读不到：{e}": "Can't read comments on post {id}: {e}",
+    "被限流，等 {sec} 秒": "Rate limited, waiting {sec}s",
+    "{name} 第 {n} 次失败：{e}": "{name} attempt {n} failed: {e}",
+    " · 帖子{post}的评论 · {n} 条": " · comments on post {post} · {n} items",
+    " · {n} 条": " · {n} items",
+    " · 帖子{post}": " · post {post}",
+    "不支持的代理类型: {s}（用 socks5:// 或 http://）": "Unsupported proxy type: {s} (use socks5:// or http://)",
+    "连不上 Telegram。打开你的代理软件（Clash/v2rayN 等）再点重试；或在 config.json 里写 \"proxy\": \"socks5://127.0.0.1:端口\"":
+        "Can't reach Telegram. Start your proxy (Clash / v2rayN …) and retry, or set \"proxy\": \"socks5://127.0.0.1:PORT\" in config.json",
+    "打不开：找不到这个群/频道/用户（可能是私有的，或者你没加入）":
+        "Can't open it: no such chat, channel or user (it may be private, or you haven't joined)",
+    "已发送加入申请，等管理员同意后再点这个链接": "Join request sent — wait for an admin to approve, then open the link again",
+    "邀请链接已失效": "That invite link has expired",
+    "你加入的群/频道太多了，先退掉一些": "You're in too many groups/channels — leave some first",
+    "加入失败：{e}": "Couldn't join: {e}",
+    "已加入，刷新一下左边列表就能看到": "Joined — refresh the chat list to see it",
+    "找不到消息 {id}": "Message {id} not found",
+    "读不到消息：{e}": "Can't read messages: {e}",
+    "还没登录": "Not logged in yet",
+    "没有要下载的": "Nothing selected to download",
+    "消息找不到了，重新打开这个聊天再试": "Those messages are gone — reopen the chat and try again",
+    "文件不见了，可能被删了": "File is missing — it may have been deleted",
+    "还没填 api_id / api_hash：去 https://my.telegram.org → API development tools 建一个应用，把两个值填到 config.json 里（已经给你建好模板了），再点重试":
+        "No api_id / api_hash yet: create an app at https://my.telegram.org → API development tools, put both values in config.json (a template has been created for you), then retry",
+}
+
+
+def tr(s, **kw):
+    """s 用中文原文当 key；英文模式下查表，查不到就按原文。"""
+    out = EN.get(s, s) if LANG == "en" else s
+    return out.format(**kw) if kw else out
+
+
 # ---------------- 工具函数 ----------------
 
 def safe(name, maxlen=150):
@@ -106,7 +153,7 @@ def parse_proxy(s):
     u = urlparse(s)
     scheme = {"socks5h": "socks5", "https": "http"}.get(u.scheme.lower(), u.scheme.lower())
     if scheme not in ("socks5", "socks4", "http"):
-        raise ValueError(f"不支持的代理类型: {u.scheme}（用 socks5:// 或 http://）")
+        raise ValueError(tr("不支持的代理类型: {s}（用 socks5:// 或 http://）", s=u.scheme))
     return {"proxy_type": scheme, "addr": u.hostname, "port": u.port, "rdns": True,
             "username": u.username, "password": u.password}
 
@@ -174,7 +221,7 @@ async def connect(cfg):
     if not api_id or not api_hash:
         if not CONFIG.exists():
             save_config(CONFIG_TEMPLATE)
-        raise ValueError(NEED_API)
+        raise ValueError(tr(NEED_API))
     DATA.mkdir(exist_ok=True)
     for proxy in proxy_candidates(cfg):
         log.info("连接 Telegram（%s）", proxy or "直连")
@@ -191,8 +238,8 @@ async def connect(cfg):
         except Exception as e:
             log.warning("连接失败: %r", e)
             await client.disconnect()
-    raise ConnectionError("连不上 Telegram。打开你的代理软件（Clash/v2rayN 等）再点重试；"
-                          "或在 config.json 里写 \"proxy\": \"socks5://127.0.0.1:端口\"")
+    raise ConnectionError(tr("连不上 Telegram。打开你的代理软件（Clash/v2rayN 等）再点重试；"
+                             "或在 config.json 里写 \"proxy\": \"socks5://127.0.0.1:端口\""))
 
 
 def qr_data_url(url):
@@ -259,14 +306,14 @@ def has_photo(e):
     return p is not None and not isinstance(p, (types.ChatPhotoEmpty, types.UserProfilePhotoEmpty))
 
 
-def preview_text(m):
+def preview_parts(m):
+    """返回 (类型标签, 正文)。标签交给界面按语言拼，省得切语言还要重新拉列表。"""
     if m is None:
-        return ""
+        return None, ""
     if getattr(m, "action", None):
-        return "[系统消息]"
+        return "系统消息", ""
     kind = kind_of(m)
-    tag = f"[{KINDS[kind]}] " if kind else ""
-    return (tag + (m.message or "")).strip()[:80]
+    return (KINDS[kind] if kind else None), (m.message or "").strip()[:80]
 
 
 async def list_chats(client):
@@ -280,6 +327,7 @@ async def list_chats(client):
         prefix = ""
         if m and d.is_group and not m.out and m.sender:
             prefix = utils.get_display_name(m.sender) + ": "
+        pkind, ptext = preview_parts(m)
         rows.append({
             "id": d.id,
             "name": "收藏夹" if kind == "收藏夹" else d.name,
@@ -287,7 +335,8 @@ async def list_chats(client):
             "protected": bool(getattr(e, "noforwards", False)),
             "comments": bool(kind == "频道" and getattr(e, "has_link", False)),
             "photo": has_photo(e),
-            "preview": prefix + preview_text(m),
+            "preview": prefix + ptext,
+            "preview_kind": pkind,
             "date": m.date.astimezone().isoformat() if m else None,
             "unread": d.unread_count,
             "pinned": d.pinned,
@@ -459,11 +508,13 @@ async def reply_quotes(client, msgs, in_thread):
     try:
         for g in await client.get_messages(msgs[0].peer_id, ids=list(set(want.values()))):
             if g:
+                qk, qt = preview_parts(g)
                 got[g.id] = {"id": g.id, "sender": utils.get_display_name(g.sender) if g.sender else "",
-                             "text": preview_text(g)}
+                             "kind": qk, "text": qt}
     except Exception as e:
         log.warning("读回复引用失败: %r", e)
-    return {mid: got.get(rid, {"id": rid, "sender": "", "text": "消息已删除"}) for mid, rid in want.items()}
+    return {mid: got.get(rid, {"id": rid, "sender": "", "kind": None, "text": tr("消息已删除")})
+            for mid, rid in want.items()}
 
 
 async def browse(client, chat, post=None, offset_id=0, limit=40, asc=False, search=None):
@@ -617,7 +668,7 @@ async def resolve_link(client, url):
             entity = await resolve(client, chat)
     except (ValueError, TypeError, errors.RPCError) as e:
         log.info("链接解析失败 %s: %r", url, e)
-        return {"error": "打不开：找不到这个群/频道/用户（可能是私有的，或者你没加入）"}
+        return {"error": tr("打不开：找不到这个群/频道/用户（可能是私有的，或者你没加入）")}
     return {"chat": chat_info(entity), "msg": msg, "comment": comment}
 
 
@@ -628,15 +679,15 @@ async def join_invite(client, invite):
     except errors.UserAlreadyParticipantError:
         return {"chat": chat_info((await client(functions.messages.CheckChatInviteRequest(invite))).chat)}
     except errors.InviteRequestSentError:
-        return {"error": "已发送加入申请，等管理员同意后再点这个链接"}
+        return {"error": tr("已发送加入申请，等管理员同意后再点这个链接")}
     except (errors.InviteHashExpiredError, errors.InviteHashInvalidError):
-        return {"error": "邀请链接已失效"}
+        return {"error": tr("邀请链接已失效")}
     except errors.ChannelsTooMuchError:
-        return {"error": "你加入的群/频道太多了，先退掉一些"}
+        return {"error": tr("你加入的群/频道太多了，先退掉一些")}
     except errors.RPCError as e:
-        return {"error": f"加入失败：{e}"}
+        return {"error": tr("加入失败：{e}", e=e)}
     chat = next(iter(getattr(upd, "chats", None) or []), None)
-    return {"chat": chat_info(chat)} if chat else {"error": "已加入，刷新一下左边列表就能看到"}
+    return {"chat": chat_info(chat)} if chat else {"error": tr("已加入，刷新一下左边列表就能看到")}
 
 
 async def thumb_bytes(client, msg, min_w=200):
@@ -647,7 +698,7 @@ async def thumb_bytes(client, msg, min_w=200):
 async def messages_for_link(client, entity, msg_id):
     msg = await client.get_messages(entity, ids=msg_id)
     if msg is None:
-        raise ValueError(f"找不到消息 {msg_id}")
+        raise ValueError(tr("找不到消息 {id}", id=msg_id))
     if not msg.grouped_id:  # 不是相册
         return [msg]
     near = await client.get_messages(entity, ids=list(range(msg_id - 10, msg_id + 11)))
@@ -846,16 +897,16 @@ class Job:
         try:
             await self._run()
             self.status = "完成"
-            self.say(f"完成：新下载 {self.ok} 个，跳过已有 {self.skip} 个"
-                     + (f"（其中 {self.dup} 个是频道重复发的，没重复下）" if self.dup else "")
-                     + (f"，失败 {len(self.fail)} 个" if self.fail else ""))
+            self.say(tr("完成：新下载 {ok} 个，跳过已有 {skip} 个", ok=self.ok, skip=self.skip)
+                     + (tr("（其中 {dup} 个是频道重复发的，没重复下）", dup=self.dup) if self.dup else "")
+                     + (tr("，失败 {fail} 个", fail=len(self.fail)) if self.fail else ""))
         except asyncio.CancelledError:
             self.status = "已停止"
-            self.say("已停止。下次再下同一个会跳过已下好的文件")
+            self.say(tr("已停止。下次再下同一个会跳过已下好的文件"))
             raise
         except Exception as e:
             self.status = "出错"
-            self.say(f"出错：{e}")
+            self.say(tr("出错：{e}", e=e))
             log.exception("任务出错")
         finally:
             if self.index:
@@ -876,7 +927,7 @@ class Job:
         entity = await resolve(self.client, chat)
         self.title = utils.get_display_name(entity) or str(entity.id)
         if msg_id and not self.picked:
-            self.title += f" · 帖子{msg_id}"
+            self.title += tr(" · 帖子{post}", post=msg_id)
         self.out = chat_folder(entity)
         self.out.mkdir(parents=True, exist_ok=True)
         self.index = FileIndex(self.out)
@@ -887,11 +938,11 @@ class Job:
         post_id = self.picked["post"] if self.picked else 0
         if self.picked:
             n = len({m.grouped_id or m.id for m in self.picked["msgs"]})
-            self.title += f" · 帖子{post_id}的评论 · {n} 条" if post_id else f" · {n} 条"
+            self.title += (tr(" · 帖子{post}的评论 · {n} 条", post=post_id, n=n) if post_id else tr(" · {n} 条", n=n))
         self.status = "下载中"
         if not self.picked:
-            self.say({"posts": "下载全部消息", "comments": "只下评论区", "both": "下载全部帖子 + 评论区"}[scope]
-                     + ("（开了禁止保存，照样下）" if getattr(entity, "noforwards", False) else ""))
+            self.say(tr({"posts": "下载全部消息", "comments": "只下评论区", "both": "下载全部帖子 + 评论区"}[scope])
+                     + (tr("（开了禁止保存，照样下）") if getattr(entity, "noforwards", False) else ""))
 
         self.queue = asyncio.Queue(maxsize=JOBS * 4)
         workers = [asyncio.create_task(self.worker()) for _ in range(JOBS)]
@@ -953,7 +1004,7 @@ class Job:
                 if kind:
                     await self.enqueue(c, kind, save_path(self.out, c, kind, post.id))
         except errors.RPCError as e:
-            self.say(f"帖子 {post.id} 的评论读不到：{e}")
+            self.say(tr("帖子 {id} 的评论读不到：{e}", id=post.id, e=e))
             return
         self.comment_posts += 1
         if self.text and lines:
@@ -1018,10 +1069,10 @@ class Job:
                         break
                     msg = fresh
                 except errors.FloodWaitError as e:
-                    self.say(f"被限流，等 {e.seconds} 秒")
+                    self.say(tr("被限流，等 {sec} 秒", sec=e.seconds))
                     await asyncio.sleep(e.seconds + 1)
                 except Exception as e:
-                    self.say(f"{path.name} 第 {attempt} 次失败：{e!r}")
+                    self.say(tr("{name} 第 {n} 次失败：{e}", name=path.name, n=attempt, e=repr(e)))
                     await asyncio.sleep(3 * attempt)
             self.active.pop(key, None)
             self.done += 1

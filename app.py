@@ -178,6 +178,12 @@ async def retry(_):
     return ok()
 
 
+@routes.post("/api/lang")
+async def set_lang(request):
+    core.LANG = "en" if (await request.json()).get("lang") == "en" else "zh"
+    return ok()
+
+
 @routes.post("/api/bye")
 async def bye(_):
     return ok()
@@ -203,7 +209,7 @@ async def messages(request):
             asc=bool(q.get("asc")), search=q.get("search"))
     except Exception as e:
         log.exception("读取消息失败")
-        return web.json_response({"error": f"读不到消息：{e}"}, status=400)
+        return web.json_response({"error": core.tr("读不到消息：{e}", e=e)}, status=400)
     for m in msgs:
         app.msgs[(chat, post, m.id)] = m
     return web.json_response({"items": items, "next": nxt})
@@ -331,14 +337,14 @@ async def avatar(request):
 @routes.post("/api/start")
 async def start(request):
     if app.stage != "ready":
-        return web.json_response({"error": "还没登录"}, status=400)
+        return web.json_response({"error": core.tr("还没登录")}, status=400)
     body = await request.json()
     targets = [t for t in body.get("targets", []) if t not in ("", None)]
     if not targets:
-        return web.json_response({"error": "没有要下载的"}, status=400)
+        return web.json_response({"error": core.tr("没有要下载的")}, status=400)
     new = app.start(targets, body)
     if not new:
-        return web.json_response({"error": "消息找不到了，重新打开这个聊天再试"}, status=400)
+        return web.json_response({"error": core.tr("消息找不到了，重新打开这个聊天再试")}, status=400)
     return ok(ids=[j.id for j in new])
 
 
@@ -385,7 +391,7 @@ async def open_path(request):
     if not rel:
         path.mkdir(parents=True, exist_ok=True)
     if not path.exists():
-        return web.json_response({"error": "文件不见了，可能被删了"}, status=404)
+        return web.json_response({"error": core.tr("文件不见了，可能被删了")}, status=404)
     if body.get("reveal"):
         subprocess.Popen(["explorer", "/select,", str(path)])
     else:

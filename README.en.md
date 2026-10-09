@@ -26,6 +26,7 @@ Chat list on the left, message bubbles on the right — much like the app you us
 - **Links actually work**: `t.me` links jump straight to that channel, message or comment; `@usernames`, `#hashtags` and reply quotes are all clickable
 - "💬 N comments" under a channel post opens the comment thread, just like on mobile
 - In-chat search; Esc or the mouse back button to go back
+- **Bilingual UI** — switch between English and Chinese from the top left (job logs and statuses follow too)
 
 The only difference: a download button in the corner of every file.
 
@@ -106,8 +107,6 @@ A QR code appears on first launch — scan it with your phone: **Settings → De
 | Every comment on a post | open the comment thread → **下载全部评论** |
 
 The **⬇** in the top left is the download manager (progress, speed, per-task stop); **📁** opens the download folder.
-
-> The interface is currently in Chinese.
 
 ## Where files go
 
