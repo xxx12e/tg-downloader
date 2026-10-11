@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "config.json"
 DATA = ROOT / "data"
 SESSION = DATA / "tg"
-DEFAULT_OUT = ROOT / "downloads"
+DEFAULT_OUT = ROOT / "downloads"   # 下载根目录，可以在界面里改（存到 config.json 的 download_dir）
 
 # 需要你自己的 api_id / api_hash：https://my.telegram.org → API development tools
 # 第一次运行会生成 config.json 模板，填进去即可。
@@ -82,6 +82,10 @@ EN = {
     "加入失败：{e}": "Couldn't join: {e}",
     "已加入，刷新一下左边列表就能看到": "Joined — refresh the chat list to see it",
     "找不到消息 {id}": "Message {id} not found",
+    "消息是空的": "Message is empty",
+    "发不出去：{e}": "Couldn't send: {e}",
+    "这里不能发言": "You can't post here",
+    "发送中…": "Sending…",
     "读不到消息：{e}": "Can't read messages: {e}",
     "还没登录": "Not logged in yet",
     "没有要下载的": "Nothing selected to download",
@@ -182,7 +186,28 @@ def parse_target(s):
 # ---------------- 连接 & 登录 ----------------
 
 def load_config():
-    return json.loads(CONFIG.read_text("utf-8")) if CONFIG.exists() else {}
+    cfg = json.loads(CONFIG.read_text("utf-8")) if CONFIG.exists() else {}
+    if d := cfg.get("download_dir"):
+        apply_download_dir(d)
+    return cfg
+
+
+def apply_download_dir(path):
+    """换下载根目录。之前记的文件状态作废，重新打开聊天会按新目录重新判断。"""
+    global DEFAULT_OUT
+    new = Path(path).expanduser()
+    if new == DEFAULT_OUT:
+        return DEFAULT_OUT
+    new.mkdir(parents=True, exist_ok=True)
+    DEFAULT_OUT = new
+    FILES.clear()
+    return DEFAULT_OUT
+
+
+def save_download_dir(path):
+    cfg = json.loads(CONFIG.read_text("utf-8")) if CONFIG.exists() else {}
+    cfg["download_dir"] = str(apply_download_dir(path))
+    save_config(cfg)
 
 
 def save_config(cfg):
@@ -340,6 +365,7 @@ async def list_chats(client):
             "date": m.date.astimezone().isoformat() if m else None,
             "unread": d.unread_count,
             "pinned": d.pinned,
+            "can_send": can_send(e),
         })
     return rows
 
@@ -589,6 +615,20 @@ TG_RESERVED = {"addstickers", "addemoji", "addtheme", "share", "proxy", "socks",
                "bg", "invoice", "contact", "boost", "m", "confirmphone", "addlist", "giftcode", "nft", "$"}
 
 
+def can_send(e):
+    """能不能在这个聊天里发言。频道要有发帖权限，群要没被禁言。"""
+    if isinstance(e, types.User):
+        return True
+    if getattr(e, "left", False) or getattr(e, "deactivated", False):
+        return False
+    if getattr(e, "creator", False) or getattr(e, "admin_rights", None):
+        return True
+    if isinstance(e, types.Channel) and e.broadcast:
+        return False  # 频道：不是管理员就发不了，但评论区可以（单独判断）
+    banned = getattr(e, "banned_rights", None) or getattr(e, "default_banned_rights", None)
+    return not (banned and banned.send_messages)
+
+
 def chat_info(e):
     peer_id = utils.get_peer_id(e)
     if isinstance(e, types.User):
@@ -598,7 +638,7 @@ def chat_info(e):
     return {"id": peer_id, "name": "收藏夹" if kind == "收藏夹" else (utils.get_display_name(e) or str(peer_id)),
             "kind": kind, "photo": has_photo(e), "protected": bool(getattr(e, "noforwards", False)),
             "comments": bool(kind == "频道" and getattr(e, "has_link", False)),
-            "joined": not getattr(e, "left", False)}
+            "joined": not getattr(e, "left", False), "can_send": can_send(e)}
 
 
 def parse_link(url):
@@ -688,6 +728,26 @@ async def join_invite(client, invite):
         return {"error": tr("加入失败：{e}", e=e)}
     chat = next(iter(getattr(upd, "chats", None) or []), None)
     return {"chat": chat_info(chat)} if chat else {"error": tr("已加入，刷新一下左边列表就能看到")}
+
+
+async def send(client, chat, text=None, reply_to=None, comment_to=None, file=None, name=None):
+    """发消息。comment_to 不为空 = 发到某条帖子的评论区。"""
+    entity = await resolve(client, chat)
+    kw = dict(reply_to=reply_to or None, comment_to=comment_to or None)
+    if file is not None:
+        f = io.BytesIO(file)
+        f.name = name or "file"
+        msg = await client.send_file(entity, f, caption=(text or None), force_document=False, **kw)
+    else:
+        if not (text or "").strip():
+            raise ValueError(tr("消息是空的"))
+        msg = await client.send_message(entity, text, link_preview=True, **kw)
+    return msg if not isinstance(msg, list) else msg[0]
+
+
+async def delete_msg(client, chat, msg_id, both=True):
+    entity = await resolve(client, chat)
+    await client.delete_messages(entity, [msg_id], revoke=both)
 
 
 async def thumb_bytes(client, msg, min_w=200):

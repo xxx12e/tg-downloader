@@ -334,6 +334,86 @@ async def avatar(request):
 
 
 # ---- 下载 ----
+PICK_PS = """
+Add-Type -AssemblyName System.Windows.Forms
+$d = New-Object System.Windows.Forms.FolderBrowserDialog
+$d.Description = 'DESC'
+$d.ShowNewFolderButton = $true
+if (Test-Path 'CUR') { $d.SelectedPath = 'CUR' }
+$top = New-Object System.Windows.Forms.Form -Property @{TopMost = $true}
+if ($d.ShowDialog($top) -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($d.SelectedPath) }
+"""
+
+
+@routes.get("/api/outdir")
+async def get_outdir(_):
+    return web.json_response({"dir": str(core.DEFAULT_OUT)})
+
+
+@routes.post("/api/outdir")
+async def set_outdir(request):
+    """pick=1 弹系统的文件夹选择框；否则直接用传来的路径。"""
+    body = await request.json()
+    path = body.get("dir")
+    if body.get("pick"):
+        desc = "选择下载文件夹" if core.LANG == "zh" else "Choose a download folder"
+        script = PICK_PS.replace("DESC", desc).replace("CUR", str(core.DEFAULT_OUT).replace("'", "''"))
+        try:
+            r = await asyncio.to_thread(subprocess.run, ["powershell", "-STA", "-NoProfile", "-Command", script],
+                                        capture_output=True, text=True, timeout=300)
+            path = (r.stdout or "").strip()
+        except Exception as e:
+            log.warning("选择文件夹失败: %r", e)
+            return web.json_response({"error": str(e)}, status=400)
+        if not path:
+            return ok(cancelled=True, dir=str(core.DEFAULT_OUT))
+    if not path:
+        return web.json_response({"error": "没给路径"}, status=400)
+    try:
+        core.save_download_dir(path)
+    except OSError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    return ok(dir=str(core.DEFAULT_OUT))
+
+
+@routes.post("/api/send")
+async def send_msg(request):
+    """发文字或文件。文件走 multipart，文字走 JSON。"""
+    if app.stage != "ready":
+        return web.json_response({"error": core.tr("还没登录")}, status=400)
+    try:
+        if request.content_type.startswith("multipart/"):
+            data = await request.post()
+            up = data.get("file")
+            blob = up.file.read() if up is not None else None
+            body = {k: data.get(k) for k in ("chat", "post", "text", "reply_to")}
+            name = getattr(up, "filename", None)
+        else:
+            body, blob, name = await request.json(), None, None
+        msg = await core.send(
+            app.client, int(body["chat"]), text=body.get("text") or "",
+            reply_to=int(body.get("reply_to") or 0) or None,
+            comment_to=int(body.get("post") or 0) or None,
+            file=blob, name=name)
+    except errors.FloodWaitError as e:
+        return web.json_response({"error": core.tr("被限流，等 {sec} 秒", sec=e.seconds)}, status=429)
+    except Exception as e:
+        log.exception("发送失败")
+        return web.json_response({"error": core.tr("发不出去：{e}", e=e)}, status=400)
+    app.chats = None  # 列表里的“最后一条消息”变了
+    return ok(id=msg.id)
+
+
+@routes.post("/api/delete")
+async def delete_msg(request):
+    b = await request.json()
+    try:
+        await core.delete_msg(app.client, int(b["chat"]), int(b["id"]), bool(b.get("both", True)))
+    except Exception as e:
+        return web.json_response({"error": core.tr("发不出去：{e}", e=e)}, status=400)
+    return ok()
+
+
 @routes.post("/api/start")
 async def start(request):
     if app.stage != "ready":

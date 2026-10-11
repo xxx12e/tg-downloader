@@ -141,6 +141,23 @@
 
   .loadtop { text-align: center; padding: 8px; }
   #tobottom { position: absolute; right: 22px; bottom: 22px; width: 46px; height: 46px; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.25); color: var(--sub); font-size: 22px; }
+  /* 底部输入框 */
+  .composer { background: #fff; border-top: 1px solid var(--line); padding: 8px 14px; display: flex; flex-direction: column; gap: 6px; }
+  .composer .reply { display: flex; align-items: center; gap: 8px; background: rgba(51,144,236,.08); border-left: 3px solid var(--blue); border-radius: 4px; padding: 4px 8px; font-size: 13px; }
+  .composer .reply .rt { flex: 1; min-width: 0; }
+  .composer .reply b { display: block; color: var(--blue); }
+  .composer .reply span { display: block; color: var(--sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .composer .box { display: flex; align-items: flex-end; gap: 8px; }
+  .composer textarea { flex: 1; resize: none; border: 1px solid var(--line); border-radius: 18px; padding: 9px 14px; font: inherit; max-height: 140px; min-height: 40px; outline: none; }
+  .composer textarea:focus { border-color: var(--blue); }
+  .composer .send { width: 40px; height: 40px; border-radius: 50%; background: var(--blue); color: #fff; font-size: 17px; flex: none; display: flex; align-items: center; justify-content: center; }
+  .composer .send:hover { background: var(--blue-d); color: #fff; }
+  .composer .send:disabled { background: #c7d4e0; cursor: default; }
+  .composer .nosend { color: var(--sub); font-size: 13px; text-align: center; padding: 6px; }
+  .composer .files { display: flex; flex-wrap: wrap; gap: 6px; }
+  .composer .files .f { background: var(--hover); border-radius: 8px; padding: 3px 8px; font-size: 13px; display: flex; align-items: center; gap: 6px; max-width: 240px; }
+  .composer .files .f span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .composer .files .f b { cursor: pointer; color: var(--sub); font-weight: normal; }
   .selbar { display: flex; align-items: center; gap: 12px; background: #fff; padding: 10px 18px; border-top: 1px solid var(--line); }
   .selbar label { display: flex; gap: 6px; align-items: center; color: var(--sub); font-size: 14px; cursor: pointer; }
 
@@ -361,7 +378,7 @@ const I18N = {
   // 消息
   "今天": "Today", "昨天": "Yesterday", "周": "", "日一二三四五六": "SunMonTueWedThuFriSat",
   "已编辑": "edited", "转发自": "Forwarded from", "打开原消息": "Open original", "回复": "Reply",
-  "[消息]": "[message]", "系统消息": "service message", "消息已删除": "message deleted", "跳到这条消息": "Jump to this message", "没有消息": "No messages",
+  "[消息]": "[message]", "写点什么…": "Write a message…", "下载到": "Save to", "更改…": "Change…", "发送": "Send", "发送文件": "Send a file", "删除": "Delete", "系统消息": "service message", "消息已删除": "message deleted", "跳到这条消息": "Jump to this message", "没有消息": "No messages",
   "还没有评论": "No comments yet", "没有搜到": "No results", "条评论<span": " comments<span",
   "这种按钮要给机器人发消息，在手机上点": "This button sends a message to a bot — use the phone app",
   "这条消息不存在或已被删除，已跳到附近": "That message is gone or deleted — jumped nearby",
@@ -604,10 +621,12 @@ function renderChat() {
     </div>
     <div id="scroller"><div id="msgs"></div></div>
     <button id="tobottom" class="hidden" onclick="toEnd()" title="${t("到最新")}">⌄</button>
-    <div class="selbar ${v.selecting ? "" : "hidden"}" id="selbar"></div>`;
+    <div class="selbar ${v.selecting ? "" : "hidden"}" id="selbar"></div>
+    ${composerHtml(v)}`;
   $("scroller").onscroll = onScroll;
   $("msgs").onclick = onMsgClick;
   $("msgs").oncontextmenu = onMsgMenu;
+  bindComposer();
   renderSelbar();
 }
 const msgUrl = (v, offset, asc) => `/api/messages?chat=${v.chat}&post=${v.post}&offset=${offset}${asc ? "&asc=1" : ""}${v.search ? "&search=" + encodeURIComponent(v.search) : ""}`;
@@ -943,6 +962,11 @@ function onMsgMenu(e) {
   if (it.media.length > 1) items.push([LANG === "en" ? `Download all ${it.media.length} files here` : `下载这条的全部 ${it.media.length} 个文件`, () => download(it.media, it)]);
   if (it !== cur.postItem) items.push([t(cur.selecting ? "选中 / 取消选中" : "选择"), () => { if (!cur.selecting) toggleSelect(); toggleSel(it); }]);
   if (it.text) items.push([t("复制文字"), () => navigator.clipboard.writeText(it.text).then(() => toast(t("已复制")))]);
+  if ($("msgIn") && it !== cur.postItem) items.push([t("回复"), () => setReply(it)]);
+  if (it.out) items.push([t("删除"), async () => {
+    try { await api("/api/delete", "POST", { chat: cur.chat, id: it.ids[0] }); cur.items = cur.items.filter(x => x !== it); renderMsgs(); loadChats(true); }
+    catch (e) { toast(e.message); }
+  }]);
   showMenu(e.clientX, e.clientY, items);
 }
 function showMenu(x, y, items) {
@@ -1040,6 +1064,10 @@ function openModal() {
     <div class="opt"><div class="lb">${t("文件类型")}</div><div class="chips" id="mtypes">
       ${TYPES.map(([k, n]) => `<label><input type="checkbox" value="${k}" ${o.types.includes(k) ? "checked" : ""}>${t(n)}</label>`).join("")}
     </div></div>
+    <div class="opt"><div class="lb">${t("下载到")}</div><div class="chips" style="align-items:center">
+      <span id="outdir" title="" style="font-size:13px;color:var(--sub);max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+      <button class="btn" style="padding:3px 10px;font-size:13px" onclick="pickOutdir()">${t("更改…")}</button>
+    </div></div>
     <div class="opt"><div class="lb">${t("其他")}</div><div class="chips" style="align-items:center">
       <label><input type="checkbox" id="mtext" ${o.text ? "checked" : ""}>${t("导出文字记录")}</label>
       <span style="font-size:14px;margin-left:6px">${t("跳过大于")} <input class="numin" id="mmax" type="number" min="0" placeholder="${t("不限")}" value="${o.max}"> MB</span>
@@ -1047,6 +1075,19 @@ function openModal() {
     <div style="color:var(--sub);font-size:13px">${t("已经下过的文件会自动跳过，中途停了下次接着下。")}</div>
     <div class="foot"><button class="btn" onclick="closeModal()">${t("取消")}</button><button class="btn fill" onclick="startAll()">${t("开始下载")}</button></div>`;
   $("modal").classList.remove("hidden");
+  showOutdir();
+}
+async function showOutdir() {
+  const el = $("outdir"); if (!el) return;
+  try { const r = await api("/api/outdir"); el.textContent = r.dir; el.title = r.dir; } catch (e) {}
+}
+async function pickOutdir() {
+  try {
+    const r = await api("/api/outdir", "POST", { pick: 1 });
+    const el = $("outdir");
+    if (el) { el.textContent = r.dir; el.title = r.dir; }
+    if (!r.cancelled) { toast(t("下载到") + "：" + r.dir); if (cur) { renderMsgs(); } }
+  } catch (e) { toast(e.message); }
 }
 function closeModal() { $("modal").classList.add("hidden"); }
 async function startAll() {
@@ -1096,6 +1137,97 @@ async function pollJobs() {
 }
 function openRel(rel, reveal) { api("/api/open", "POST", { rel, reveal: reveal ? 1 : 0 }).catch(e => toast(e.message)); }
 function openAbs(path) { api("/api/open", "POST", { path }).catch(e => toast(e.message)); }
+
+
+/* ================= 发消息 ================= */
+let replyTo = null, outbox = [];
+function composerHtml(v) {
+  if (v.search) return "";                       // 搜索结果页不发消息
+  const ok = v.post || v.c.can_send !== false;   // 评论区一般都能发
+  if (!ok) return `<div class="composer"><div class="nosend">${t("这里不能发言")}</div></div>`;
+  return `<div class="composer">
+    <div class="reply hidden" id="replyBar"><div class="rt"><b id="replyWho"></b><span id="replyTxt"></span></div>
+      <button class="icon" style="width:28px;height:28px" onclick="setReply(null)">✕</button></div>
+    <div class="files hidden" id="outFiles"></div>
+    <div class="box">
+      <button class="icon" onclick="$('fileIn').click()" title="${t("发送文件")}">📎</button>
+      <textarea id="msgIn" rows="1" placeholder="${t("写点什么…")}"></textarea>
+      <button class="send" id="sendBtn" onclick="doSend()" title="${t("发送")}">➤</button>
+    </div>
+    <input type="file" id="fileIn" multiple class="hidden" onchange="addFiles(this.files)">
+  </div>`;
+}
+function bindComposer() {
+  const ta = $("msgIn"); if (!ta) return;
+  ta.oninput = () => { ta.style.height = "auto"; ta.style.height = Math.min(140, ta.scrollHeight) + "px"; };
+  ta.onkeydown = e => {               // 回车发送，Shift+回车换行
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); doSend(); }
+    if (e.key === "Escape" && replyTo) { e.preventDefault(); e.stopPropagation(); setReply(null); }
+  };
+  ta.onpaste = e => {                 // 粘贴图片直接当附件
+    const f = [...(e.clipboardData?.files || [])];
+    if (f.length) { e.preventDefault(); addFiles(f); }
+  };
+}
+function setReply(it) {
+  replyTo = it;
+  const bar = $("replyBar"); if (!bar) return;
+  bar.classList.toggle("hidden", !it);
+  if (it) {
+    $("replyWho").textContent = it.sender || cur.c.name;
+    $("replyTxt").textContent = it.text ? it.text.slice(0, 80) : (it.media.length ? t(it.media[0].label) : "");
+    $("msgIn").focus();
+  }
+}
+function addFiles(list) {
+  outbox = outbox.concat([...list]);
+  renderOutbox();
+}
+function renderOutbox() {
+  const box = $("outFiles"); if (!box) return;
+  box.classList.toggle("hidden", !outbox.length);
+  box.innerHTML = outbox.map((f, i) =>
+    `<div class="f"><span title="${esc(f.name)}">${esc(f.name)}</span><b onclick="dropFile(${i})">✕</b></div>`).join("");
+}
+function dropFile(i) { outbox.splice(i, 1); renderOutbox(); }
+async function doSend() {
+  const ta = $("msgIn"); if (!ta) return;
+  const text = ta.value.trim(), files = outbox;
+  if (!text && !files.length) return;
+  const v = cur, btn = $("sendBtn");
+  btn.disabled = true;
+  try {
+    if (files.length) {
+      for (let i = 0; i < files.length; i++) {
+        const fd = new FormData();
+        fd.append("chat", v.chat); fd.append("post", v.post || 0);
+        if (replyTo) fd.append("reply_to", replyTo.ids[0]);
+        if (i === 0 && text) fd.append("text", text);
+        fd.append("file", files[i]);
+        const r = await fetch("/api/send", { method: "POST", headers: { "X-Token": TOKEN }, body: fd });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || r.statusText);
+      }
+    } else {
+      await api("/api/send", "POST", { chat: v.chat, post: v.post || 0, text, reply_to: replyTo ? replyTo.ids[0] : 0 });
+    }
+    ta.value = ""; ta.style.height = "auto"; outbox = []; renderOutbox(); setReply(null);
+    await refreshNewest();
+  } catch (e) { toast(e.message); }
+  btn.disabled = false;
+  ta.focus();
+}
+async function refreshNewest() {   // 发完把最新的消息拉出来
+  const v = cur;
+  if (v.newer !== null) { await loadNewer(v); }
+  else {
+    const last = v.items[v.items.length - 1];
+    const r = await api(msgUrl(v, last ? last.ids[last.ids.length - 1] : 0, true));
+    if (r.items.length) { v.items = join(v.items, tagPage(r.items, v.post)); renderMsgs(); }
+  }
+  const sc = $("scroller"); if (sc) sc.scrollTop = sc.scrollHeight;
+  loadChats(true);
+}
 
 /* ================= 在线预览 / 播放 ================= */
 // 边下边播：已经下载过的直接读本地文件（rel），没下载的从 Telegram 现取，不落盘

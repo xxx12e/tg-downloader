@@ -27,6 +27,7 @@ Chat list on the left, message bubbles on the right — much like the app you us
 - "💬 N comments" under a channel post opens the comment thread, just like on mobile
 - In-chat search; Esc or the mouse back button to go back
 - **Bilingual UI** — switch between English and Chinese from the top left (job logs and statuses follow too)
+- **You can send messages** — composer at the bottom: Enter to send, replies, photos and files, delete your own
 
 The only difference: a download button in the corner of every file.
 
@@ -105,6 +106,8 @@ A QR code appears on first launch — scan it with your phone: **Settings → De
 | Several messages | **Select** in the top right → click messages → **Download selected** |
 | A whole group / channel | **Download all**, with type and size filters |
 | Every comment on a post | open the comment thread → **Download all comments** |
+
+Before downloading, hit **Change…** in the dialog to pick where files are saved — it remembers your choice.
 
 The **⬇** in the top left is the download manager (progress, speed, per-task stop); **📁** opens the download folder.
 
