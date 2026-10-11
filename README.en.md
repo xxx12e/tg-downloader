@@ -107,7 +107,8 @@ A QR code appears on first launch — scan it with your phone: **Settings → De
 | A whole group / channel | **Download all**, with type and size filters |
 | Every comment on a post | open the comment thread → **Download all comments** |
 
-Before downloading, hit **Change…** in the dialog to pick where files are saved — it remembers your choice.
+**Every download asks where to save it first**, listing folders you've used before, or pick a new one.
+If the same file already exists in another folder, it's copied over instead of downloaded again.
 
 The **⬇** in the top left is the download manager (progress, speed, per-task stop); **📁** opens the download folder.
 

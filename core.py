@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import socket
 from collections import deque
 from contextlib import asynccontextmanager
@@ -186,28 +187,33 @@ def parse_target(s):
 # ---------------- 连接 & 登录 ----------------
 
 def load_config():
-    cfg = json.loads(CONFIG.read_text("utf-8")) if CONFIG.exists() else {}
-    if d := cfg.get("download_dir"):
-        apply_download_dir(d)
-    return cfg
+    return json.loads(CONFIG.read_text("utf-8")) if CONFIG.exists() else {}
 
 
-def apply_download_dir(path):
-    """换下载根目录。之前记的文件状态作废，重新打开聊天会按新目录重新判断。"""
-    global DEFAULT_OUT
-    new = Path(path).expanduser()
-    if new == DEFAULT_OUT:
-        return DEFAULT_OUT
-    new.mkdir(parents=True, exist_ok=True)
-    DEFAULT_OUT = new
-    FILES.clear()
-    return DEFAULT_OUT
+def recent_dirs():
+    """用过的下载文件夹，最近的在前。第一个就是默认值。"""
+    cfg = load_config()
+    dirs = [d for d in (cfg.get("recent_dirs") or []) if d]
+    if str(DEFAULT_OUT) not in dirs:
+        dirs.append(str(DEFAULT_OUT))
+    return dirs[:8]
 
 
-def save_download_dir(path):
-    cfg = json.loads(CONFIG.read_text("utf-8")) if CONFIG.exists() else {}
-    cfg["download_dir"] = str(apply_download_dir(path))
+def remember_dir(path):
+    """把这个文件夹挪到最前面，下次默认用它。"""
+    p = str(Path(path).expanduser().resolve())
+    cfg = load_config()
+    dirs = [d for d in (cfg.get("recent_dirs") or []) if d and d != p]
+    cfg["recent_dirs"] = [p] + dirs[:7]
     save_config(cfg)
+    return p
+
+
+def allowed_dir(path):
+    """只允许读写下载过的文件夹，防止别的网页借接口乱翻硬盘。"""
+    p = Path(path).expanduser().resolve()
+    roots = [Path(d).resolve() for d in recent_dirs()]
+    return any(p == r or r in p.parents for r in roots)
 
 
 def save_config(cfg):
@@ -321,9 +327,9 @@ async def _login(client, show_qr, ask_password):
 
 # ---------------- 聊天列表 & 浏览 ----------------
 
-def chat_folder(entity):
+def chat_folder(entity, root):
     title = utils.get_display_name(entity) or str(entity.id)
-    return DEFAULT_OUT / safe(f"{title}_{entity.id}")
+    return Path(root) / safe(f"{title}_{entity.id}")
 
 
 def has_photo(e):
@@ -409,51 +415,51 @@ def file_id(msg):
     return str(d.id) if d else None
 
 
-class FileIndex:
-    """记这个聊天里已经下过哪些文件（按 Telegram 文件编号）。同一个文件重复出现就不再下第二遍。"""
+INDEX_FILE = DATA / "downloaded.json"
+DOWNLOADED = {}  # Telegram 文件编号 -> 绝对路径。文件存到哪个文件夹都认得出来
+CLAIMED = {}     # 本次已排队、还没下完的；扫描跑在下载前面，光看上面那个认不出同批的重复
 
-    def __init__(self, out):
-        self.path = out / ".files.json"
+
+def load_index():
+    global DOWNLOADED
+    try:
+        DOWNLOADED = json.loads(INDEX_FILE.read_text("utf-8"))
+    except (OSError, ValueError):
+        DOWNLOADED = {}
+    for old in DEFAULT_OUT.glob("*/.files.json"):  # 兼容旧版本留下的按聊天分的记录
         try:
-            self.map = json.loads(self.path.read_text("utf-8"))
+            for fid, rel in json.loads(old.read_text("utf-8")).items():
+                DOWNLOADED.setdefault(fid, str(DEFAULT_OUT / rel))
         except (OSError, ValueError):
-            self.map = {}
-        self.claimed = {}  # 本次已排队、还没下完的；扫描跑在下载前面，光看 map 认不出同批的重复
-        self.dirty = False
+            pass
+    return DOWNLOADED
 
-    def hit(self, fid):
-        """这个文件之前下过（或本次已经排上队）→ 返回那一份的相对路径。"""
-        if not fid:
-            return None
-        if rel := self.claimed.get(fid):
-            return rel
-        rel = self.map.get(fid)
-        if rel and (DEFAULT_OUT / rel).exists():
-            return rel
-        if rel:  # 文件被删了，索引作废
-            del self.map[fid]
-            self.dirty = True
+
+def have_file(fid):
+    """这个文件之前下过、文件还在 → 返回它的绝对路径。"""
+    if not fid:
         return None
+    if p := CLAIMED.get(fid):
+        return p
+    p = DOWNLOADED.get(fid)
+    if p and Path(p).exists():
+        return p
+    if p:  # 文件被删了，记录作废
+        DOWNLOADED.pop(fid, None)
+    return None
 
-    def claim(self, fid, rel):
-        """排队时先占个位，后面再遇到同一个文件就知道是重复的。"""
-        if fid:
-            self.claimed[fid] = rel
 
-    def drop(self, fid):
-        """这一份没下成，把位子让出来，重复的那份下次还能下。"""
-        if fid:
-            self.claimed.pop(fid, None)
+def note_file(fid, path):
+    if fid:
+        DOWNLOADED[fid] = str(path)
+        CLAIMED.pop(fid, None)
 
-    def add(self, fid, rel):
-        if fid and self.map.get(fid) != rel:
-            self.map[fid] = rel
-            self.dirty = True
 
-    def save(self):
-        if self.dirty:
-            self.path.write_text(json.dumps(self.map), "utf-8")
-            self.dirty = False
+def save_index():
+    try:
+        INDEX_FILE.write_text(json.dumps(DOWNLOADED, ensure_ascii=False), "utf-8")
+    except OSError as e:
+        log.warning("下载记录存不下来: %r", e)
 
 
 def forward_name(m):
@@ -547,7 +553,7 @@ async def browse(client, chat, post=None, offset_id=0, limit=40, asc=False, sear
     """一页消息，相册合并成一条。默认新的在前（往前翻），asc=True 时从旧到新。
     post 不为空时列的是这个帖子的评论；search 不为空时是聊天内搜索。返回 (条目, 原始消息, 下一页 offset)。"""
     entity = await resolve(client, chat)
-    out = chat_folder(entity)
+    out = chat_folder(entity, DEFAULT_OUT)
     msgs = await client.get_messages(entity, limit=limit, offset_id=offset_id, reply_to=post,
                                      reverse=asc, search=search or None)
     quotes = await reply_quotes(client, msgs, bool(post)) if msgs else {}
@@ -567,12 +573,14 @@ async def browse(client, chat, post=None, offset_id=0, limit=40, asc=False, sear
         for m in g:
             if not (kind := kind_of(m)):
                 continue
-            f, path = m.file, save_path(out, m, kind, post)
+            f, fid = m.file, file_id(m)
+            here = save_path(out, m, kind, post)          # 默认文件夹里该在的位置
+            got = str(here) if here.exists() else have_file(fid)   # 也可能下到别的文件夹去了
             media.append({
-                "id": m.id, "key": msg_key(m), "fid": file_id(m), "kind": kind, "label": KINDS[kind],
+                "id": m.id, "key": msg_key(m), "fid": fid, "kind": kind, "label": KINDS[kind],
                 "name": f.name, "size": f.size or 0, "duration": f.duration, "mime": f.mime_type,
                 "w": f.width, "h": f.height, "thumb": bool(pick_thumb(m)),
-                "done": path.exists(), "rel": str(path.relative_to(DEFAULT_OUT)),
+                "done": bool(got), "path": got,
                 "emoji": f.emoji if kind == "sticker" else None,
             })
         tm = next((m for m in g if m.message), None)  # 相册的文字在其中一条上
@@ -748,6 +756,14 @@ async def send(client, chat, text=None, reply_to=None, comment_to=None, file=Non
 async def delete_msg(client, chat, msg_id, both=True):
     entity = await resolve(client, chat)
     await client.delete_messages(entity, [msg_id], revoke=both)
+
+
+def safe_path(path):
+    """接口传进来的路径，必须在用过的下载文件夹里才放行。"""
+    p = Path(path).expanduser()
+    if not allowed_dir(p):
+        raise PermissionError(str(p))
+    return p
 
 
 async def thumb_bytes(client, msg, min_w=200):
@@ -932,7 +948,7 @@ class Job:
         self.text = opts.get("text", True)
         self.scan = self.total = self.done = self.ok = self.bytes = self.skip = self.dup = 0
         self.comment_posts = self.comments = 0
-        self.index = None  # 查重索引，拿到聊天文件夹后才建
+        self.root = Path(opts.get("out_dir") or DEFAULT_OUT)  # 这一次下到哪个文件夹
         self.fail = []
         self.active = {}
         self.keys = set()
@@ -969,8 +985,7 @@ class Job:
             self.say(tr("出错：{e}", e=e))
             log.exception("任务出错")
         finally:
-            if self.index:
-                self.index.save()
+            save_index()
             for k in self.keys:  # 没下完的恢复成“未下载”
                 if FILES.get(k, {}).get("s") in ("queued", "loading"):
                     FILES.pop(k, None)
@@ -988,9 +1003,8 @@ class Job:
         self.title = utils.get_display_name(entity) or str(entity.id)
         if msg_id and not self.picked:
             self.title += tr(" · 帖子{post}", post=msg_id)
-        self.out = chat_folder(entity)
+        self.out = chat_folder(entity, self.root)
         self.out.mkdir(parents=True, exist_ok=True)
-        self.index = FileIndex(self.out)
 
         has_comments = isinstance(entity, types.Channel) and entity.broadcast and getattr(entity, "has_link", False)
         scope = self.scope if has_comments else "posts"
@@ -1080,25 +1094,36 @@ class Job:
                 return
             if self.max_bytes and msg.file and (msg.file.size or 0) > self.max_bytes:
                 return
-        key = msg_key(msg)
-        rel = str(path.relative_to(DEFAULT_OUT))
+        key, fid = msg_key(msg), file_id(msg)
         if path.exists():
             self.skip += 1
-            self.index.add(file_id(msg), rel)
-            FILES[key] = {"s": "done", "rel": rel}
+            note_file(fid, path)
+            FILES[key] = {"s": "done", "path": str(path)}
             return
-        if hit := self.index.hit(file_id(msg)):  # 同一个文件之前下过（频道重复发了），指到那一份就行
-            self.skip += 1
-            self.dup += 1
-            FILES[key] = {"s": "done", "rel": hit, "dup": True}
-            return
+        if have := have_file(fid):
+            # 这个文件之前下过（频道重复发，或者下到别的文件夹了）
+            if Path(have).parent == path.parent:
+                self.skip += 1
+                self.dup += 1
+                FILES[key] = {"s": "done", "path": have, "dup": True}
+                return
+            try:  # 这次要存到别的文件夹：直接从已有的那份复制，不用再下一遍
+                path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(have, path)
+                self.skip += 1
+                self.dup += 1
+                note_file(fid, path)
+                FILES[key] = {"s": "done", "path": str(path), "dup": True}
+                return
+            except OSError as e:
+                log.warning("复制已有文件失败，改成重新下载: %r", e)
         if FILES.get(key, {}).get("s") in ("queued", "loading"):
             return  # 别的任务正在下这个
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.index.claim(file_id(msg), rel)
+        CLAIMED[fid] = str(path)
         self.total += 1
         self.keys.add(key)
-        FILES[key] = {"s": "queued", "got": 0, "size": (msg.file.size if msg.file else 0) or 0, "rel": rel}
+        FILES[key] = {"s": "queued", "got": 0, "size": (msg.file.size if msg.file else 0) or 0, "path": str(path)}
         await self.queue.put((msg, path))
 
     async def worker(self):
@@ -1140,10 +1165,10 @@ class Job:
                 self.ok += 1
                 self.bytes += path.stat().st_size
                 state["s"] = "done"
-                self.index.add(file_id(msg), state["rel"])
-                if self.done % 20 == 0:  # 中途也存一下，万一中断了索引不至于全丢
-                    self.index.save()
+                note_file(file_id(msg), path)
+                if self.done % 20 == 0:  # 中途也存一下，万一中断了记录不至于全丢
+                    save_index()
             else:
-                self.index.drop(file_id(msg))
+                CLAIMED.pop(file_id(msg), None)
                 self.fail.append(str(path.relative_to(self.out)))
                 state["s"] = "fail"

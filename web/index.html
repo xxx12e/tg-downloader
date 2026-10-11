@@ -270,6 +270,11 @@
   /* 跳到某条时闪一下 */
   .msg.flash { animation: flash 1.8s ease-out; border-radius: 10px; }
   @keyframes flash { 0%, 35% { background: rgba(51,144,236,.32); } 100% { background: transparent; } }
+  .dirlist { display: flex; flex-direction: column; gap: 4px; max-height: 210px; overflow-y: auto; margin-bottom: 10px; }
+  .dirlist label { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; font-size: 13.5px; }
+  .dirlist label:has(input:checked) { background: #e5f1fd; border-color: var(--blue); }
+  .dirlist label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+  .dirlist input { accent-color: var(--blue); flex: none; }
   .urlbox { background: #f4f4f5; border-radius: 8px; padding: 10px 12px; word-break: break-all; font-size: 14px; margin-bottom: 8px; }
   .sinput { flex: 1; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; }
 </style>
@@ -305,7 +310,7 @@
 <div id="app" class="hidden">
   <aside id="side">
     <div class="side-top">
-      <button class="icon" data-t-title="打开下载文件夹" title="打开下载文件夹" onclick="openRel('')">📁</button>
+      <button class="icon" data-t-title="打开下载文件夹" title="打开下载文件夹" onclick="openPath('')">📁</button>
       <button class="icon" id="langBtn" onclick="setLang(LANG === 'zh' ? 'en' : 'zh')" title="中文 / English">EN</button>
       <div class="search"><input id="q" data-t-ph="搜索" placeholder="搜索" oninput="renderChats()"></div>
       <button class="icon" data-t-title="下载管理" title="下载管理" onclick="openDrawer()">⬇<span class="badge hidden" id="dlcount"></span></button>
@@ -378,7 +383,7 @@ const I18N = {
   // 消息
   "今天": "Today", "昨天": "Yesterday", "周": "", "日一二三四五六": "SunMonTueWedThuFriSat",
   "已编辑": "edited", "转发自": "Forwarded from", "打开原消息": "Open original", "回复": "Reply",
-  "[消息]": "[message]", "写点什么…": "Write a message…", "下载到": "Save to", "更改…": "Change…", "发送": "Send", "发送文件": "Send a file", "删除": "Delete", "系统消息": "service message", "消息已删除": "message deleted", "跳到这条消息": "Jump to this message", "没有消息": "No messages",
+  "[消息]": "[message]", "写点什么…": "Write a message…", "存到哪个文件夹？": "Save to which folder?", "选择其他文件夹…": "Choose another folder…", "发送": "Send", "发送文件": "Send a file", "删除": "Delete", "系统消息": "service message", "消息已删除": "message deleted", "跳到这条消息": "Jump to this message", "没有消息": "No messages",
   "还没有评论": "No comments yet", "没有搜到": "No results", "条评论<span": " comments<span",
   "这种按钮要给机器人发消息，在手机上点": "This button sends a message to a bot — use the phone app",
   "这条消息不存在或已被删除，已跳到附近": "That message is gone or deleted — jumped nearby",
@@ -944,7 +949,7 @@ function onMsgClick(e) {
   }
   const { m, it } = cur.media.get(el.dataset.key);
   if (act === "dl") return download([m], it);
-  if (act === "open") return openRel(m.rel);
+  if (act === "open") return openPath(m.path);
   if (act === "none") return;
   preview(m, it);  // 点图片/视频/文件本身 = 在线预览；下载用角上的 ⬇ 或右键
 }
@@ -956,7 +961,7 @@ function onMsgMenu(e) {
   if (el) {
     const { m } = cur.media.get(el.dataset.key);
     items.push([t(previewKind(m) === "audio" ? "播放" : "预览"), () => preview(m, it)]);
-    if (isDone(m)) { items.push([t("用电脑上的程序打开"), () => openRel(m.rel)], [t("在文件夹中显示"), () => openRel(m.rel, true)]); }
+    if (isDone(m)) { items.push([t("用电脑上的程序打开"), () => openPath(m.path)], [t("在文件夹中显示"), () => openPath(m.path, true)]); }
     else items.push([t("下载这个文件"), () => download([m], it)]);
   }
   if (it.media.length > 1) items.push([LANG === "en" ? `Download all ${it.media.length} files here` : `下载这条的全部 ${it.media.length} 个文件`, () => download(it.media, it)]);
@@ -993,9 +998,12 @@ const isDone = m => (m.state ? m.state.s === "done" : m.done);
 async function download(ms, it) {
   const todo = ms.filter(m => !isDone(m) && !(m.state && ["queued", "loading"].includes(m.state.s)));
   if (!todo.length) return toast(t("已经下载过了"));
+  const name = todo.length === 1 ? (todo[0].name || t(todo[0].label)) : `${todo.length} ${t("个文件")}`;
+  const dir = await askDir(name);
+  if (!dir) return;
   todo.forEach(m => { m.state = { s: "queued" }; updateKey(m.key); });
   try {
-    await api("/api/start", "POST", { targets: [{ chat: cur.chat, post: todo[0].vp, ids: todo.map(m => m.id) }], scope: "posts" });
+    await api("/api/start", "POST", { targets: [{ chat: cur.chat, post: todo[0].vp, ids: todo.map(m => m.id) }], scope: "posts", out_dir: dir });
   } catch (e) { toast(e.message); todo.forEach(m => { m.state = null; updateKey(m.key); }); }
 }
 function updateKey(key) {
@@ -1012,7 +1020,7 @@ async function pollFiles() {
   for (const k of keys) {
     const rec = cur.media.get(k); if (!rec) continue;
     const ns = st[k] || null, os = rec.m.state;
-    if (JSON.stringify(ns) !== JSON.stringify(os)) { rec.m.state = ns; if (ns && ns.s === "done") rec.m.done = true; updateKey(k); }
+    if (JSON.stringify(ns) !== JSON.stringify(os)) { rec.m.state = ns; if (ns && ns.s === "done") { rec.m.done = true; if (ns.path) rec.m.path = ns.path; } updateKey(k); }
   }
 }
 
@@ -1045,8 +1053,10 @@ function selectAllLoaded() { cur.items.forEach(it => cur.sel.set(it.ids[0], it))
 async function downloadSelected() {
   const v = cur, its = [...v.sel.values()];
   const withCmt = $("selcmt") && $("selcmt").checked;
+  const dir = await askDir(`${its.length} ${t("条")}`);
+  if (!dir) return;
   try {
-    await api("/api/start", "POST", { targets: [{ chat: v.chat, post: v.post, ids: its.flatMap(it => it.ids) }], scope: withCmt ? "both" : "posts" });
+    await api("/api/start", "POST", { targets: [{ chat: v.chat, post: v.post, ids: its.flatMap(it => it.ids) }], scope: withCmt ? "both" : "posts", out_dir: dir });
     toast(LANG === "en" ? `Started downloading ${its.length} messages` : `已开始下载 ${its.length} 条`);
     toggleSelect();
   } catch (e) { toast(e.message); }
@@ -1064,10 +1074,6 @@ function openModal() {
     <div class="opt"><div class="lb">${t("文件类型")}</div><div class="chips" id="mtypes">
       ${TYPES.map(([k, n]) => `<label><input type="checkbox" value="${k}" ${o.types.includes(k) ? "checked" : ""}>${t(n)}</label>`).join("")}
     </div></div>
-    <div class="opt"><div class="lb">${t("下载到")}</div><div class="chips" style="align-items:center">
-      <span id="outdir" title="" style="font-size:13px;color:var(--sub);max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
-      <button class="btn" style="padding:3px 10px;font-size:13px" onclick="pickOutdir()">${t("更改…")}</button>
-    </div></div>
     <div class="opt"><div class="lb">${t("其他")}</div><div class="chips" style="align-items:center">
       <label><input type="checkbox" id="mtext" ${o.text ? "checked" : ""}>${t("导出文字记录")}</label>
       <span style="font-size:14px;margin-left:6px">${t("跳过大于")} <input class="numin" id="mmax" type="number" min="0" placeholder="${t("不限")}" value="${o.max}"> MB</span>
@@ -1075,21 +1081,8 @@ function openModal() {
     <div style="color:var(--sub);font-size:13px">${t("已经下过的文件会自动跳过，中途停了下次接着下。")}</div>
     <div class="foot"><button class="btn" onclick="closeModal()">${t("取消")}</button><button class="btn fill" onclick="startAll()">${t("开始下载")}</button></div>`;
   $("modal").classList.remove("hidden");
-  showOutdir();
 }
-async function showOutdir() {
-  const el = $("outdir"); if (!el) return;
-  try { const r = await api("/api/outdir"); el.textContent = r.dir; el.title = r.dir; } catch (e) {}
-}
-async function pickOutdir() {
-  try {
-    const r = await api("/api/outdir", "POST", { pick: 1 });
-    const el = $("outdir");
-    if (el) { el.textContent = r.dir; el.title = r.dir; }
-    if (!r.cancelled) { toast(t("下载到") + "：" + r.dir); if (cur) { renderMsgs(); } }
-  } catch (e) { toast(e.message); }
-}
-function closeModal() { $("modal").classList.add("hidden"); }
+function closeModal() { $("modal").classList.add("hidden"); if (modalCancel) { const f = modalCancel; modalCancel = null; f(); } }
 async function startAll() {
   const v = cur;
   const o = {
@@ -1098,9 +1091,12 @@ async function startAll() {
     text: $("mtext").checked, max: $("mmax").value,
   };
   localStorage.setItem("tgdl.opts", JSON.stringify(v.post ? { ...defaults(), types: o.types, text: o.text, max: o.max } : o));
+  closeModal();
+  const dir = await askDir(v.post ? t("下载全部评论") : t("下载全部") + " · " + v.c.name);
+  if (!dir) return;
   try {
-    await api("/api/start", "POST", { targets: [v.post ? { chat: v.chat, msg: v.post } : v.chat], scope: o.scope, types: o.types, text: o.text, max_size: parseFloat(o.max) || null });
-    closeModal(); openDrawer();
+    await api("/api/start", "POST", { targets: [v.post ? { chat: v.chat, msg: v.post } : v.chat], scope: o.scope, types: o.types, text: o.text, max_size: parseFloat(o.max) || null, out_dir: dir });
+    openDrawer();
   } catch (e) { toast(e.message); }
 }
 
@@ -1129,14 +1125,13 @@ async function pollJobs() {
       ${j.active.map(a => { const fp = a.size ? Math.round(a.got / a.size * 100) : 0; return `<div class="af"><span title="${esc(a.name)}">${esc(a.name)}</span><div class="bar"><i style="width:${fp}%"></i></div><span>${fp}%</span></div>`; }).join("")}
       ${j.logs.length ? `<div class="jl" title="${esc(j.logs.join("\n"))}">${esc(j.logs[j.logs.length - 1])}</div>` : ""}
       <div class="ja">
-        ${j.out ? `<button class="btn" onclick='openAbs(${esc(JSON.stringify(j.out))})'>${t("打开文件夹")}</button>` : ""}
+        ${j.out ? `<button class="btn" onclick='openPath(${esc(JSON.stringify(j.out))})'>${t("打开文件夹")}</button>` : ""}
         ${run || j.status === "排队中" ? `<button class="btn red" onclick="api('/api/cancel','POST',{id:${j.id}})">${t("停止")}</button>` : ""}
       </div>
     </div>`;
   }).join("") : `<div class="empty">${t("还没有下载任务")}<br><br>${t("在聊天里点图片/文件上的 ⬇，或者点右上角“下载全部”")}</div>`;
 }
-function openRel(rel, reveal) { api("/api/open", "POST", { rel, reveal: reveal ? 1 : 0 }).catch(e => toast(e.message)); }
-function openAbs(path) { api("/api/open", "POST", { path }).catch(e => toast(e.message)); }
+function openPath(path, reveal) { api("/api/open", "POST", { path, reveal: reveal ? 1 : 0 }).catch(e => toast(e.message)); }
 
 
 /* ================= 发消息 ================= */
@@ -1229,9 +1224,43 @@ async function refreshNewest() {   // 发完把最新的消息拉出来
   loadChats(true);
 }
 
+
+/* ================= 每次下载都问存到哪 ================= */
+function askDir(what) {
+  return new Promise(async resolve => {
+    let dirs = [];
+    try { dirs = (await api("/api/outdir")).dirs || []; } catch (e) {}
+    const draw = (sel) => {
+      $("modalBox").innerHTML = `<h3>${t("存到哪个文件夹？")}</h3>
+        ${what ? `<div style="color:var(--sub);font-size:13px;margin-bottom:8px">${esc(what)}</div>` : ""}
+        <div class="dirlist">${dirs.map((d, i) => `<label><input type="radio" name="dir" value="${i}" ${i === sel ? "checked" : ""}><span>${esc(d)}</span></label>`).join("")}</div>
+        <button class="btn" style="padding:4px 12px" id="pickOther">${t("选择其他文件夹…")}</button>
+        <div class="foot"><button class="btn" id="dirCancel">${t("取消")}</button>
+          <button class="btn fill" id="dirOk">${t("开始下载")}</button></div>`;
+      $("pickOther").onclick = async () => {
+        $("pickOther").disabled = true;
+        try {
+          const r = await api("/api/outdir", "POST", { pick: 1 });
+          if (r.dirs) dirs = r.dirs;
+          draw(r.cancelled ? sel : 0);           // 新选的会排在第一个
+        } catch (e) { toast(e.message); draw(sel); }
+      };
+      $("dirCancel").onclick = () => { closeModal(); resolve(null); };
+      $("dirOk").onclick = () => {
+        const i = +document.querySelector("#modalBox input[name=dir]:checked").value;
+        closeModal(); resolve(dirs[i]);
+      };
+    };
+    draw(0);
+    $("modal").classList.remove("hidden");
+    modalCancel = () => resolve(null);          // 点遮罩/按 Esc 也算取消
+  });
+}
+let modalCancel = null;
+
 /* ================= 在线预览 / 播放 ================= */
 // 边下边播：已经下载过的直接读本地文件（rel），没下载的从 Telegram 现取，不落盘
-const streamUrl = m => `/api/stream?t=${TOKEN}&chat=${cur.chat}&post=${m.vp}&id=${m.id}&rel=${encodeURIComponent(m.rel || "")}`;
+const streamUrl = m => `/api/stream?t=${TOKEN}&chat=${cur.chat}&post=${m.vp}&id=${m.id}&path=${encodeURIComponent(m.path || "")}`;
 function previewKind(m) {  // 这个文件在窗口里怎么看
   const mt = (m.mime || "").toLowerCase();
   if (m.kind === "photo") return "photo";
@@ -1314,8 +1343,8 @@ function syncViewerButtons() {
   $("vdl").classList.toggle("hidden", done);
   $("vdl").textContent = busy ? (m.state.s === "loading" && m.state.size ? `${t("下载中")} ${Math.floor(m.state.got / m.state.size * 100)}%` : t("排队中") + "…") : t("⬇ 下载");
   $("vdl").onclick = () => download([m], it);
-  $("vopen").classList.toggle("hidden", !done); $("vopen").onclick = () => openRel(m.rel);
-  $("vreveal").classList.toggle("hidden", !done); $("vreveal").onclick = () => openRel(m.rel, true);
+  $("vopen").classList.toggle("hidden", !done); $("vopen").onclick = () => openPath(m.path);
+  $("vreveal").classList.toggle("hidden", !done); $("vreveal").onclick = () => openPath(m.path, true);
 }
 function viewStep(d) {
   const keys = viewKeys(), i = keys.indexOf(viewing);

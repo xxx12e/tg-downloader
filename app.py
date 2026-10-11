@@ -143,11 +143,11 @@ def image(data):
     return web.Response(body=data, content_type="image/jpeg", headers={"Cache-Control": "max-age=86400"})
 
 
-def under_downloads(rel):
-    path = (core.DEFAULT_OUT / rel).resolve()
-    if core.DEFAULT_OUT.resolve() not in path.parents:  # 只允许动下载目录里的
+def under_downloads(path):
+    try:
+        return core.safe_path(path)
+    except PermissionError:
         raise web.HTTPForbidden()
-    return path
 
 
 @routes.get("/")
@@ -271,9 +271,9 @@ PLAY_MIME = {"video/quicktime": "video/mp4", "video/x-matroska": "video/webm", "
 async def stream(request):
     """在线预览/播放：边下边播，支持拖进度条（Range）。不落盘；已经下载过的直接读本地文件。"""
     q = request.query
-    if q.get("rel"):
+    if q.get("path"):
         try:
-            path = under_downloads(q["rel"])
+            path = under_downloads(q["path"])
             if path.is_file():
                 headers = {"Content-Disposition": "inline", "Cache-Control": "no-store"}
                 ct = mimetypes.guess_type(path.name)[0]
@@ -347,12 +347,13 @@ if ($d.ShowDialog($top) -eq [System.Windows.Forms.DialogResult]::OK) { [Console]
 
 @routes.get("/api/outdir")
 async def get_outdir(_):
-    return web.json_response({"dir": str(core.DEFAULT_OUT)})
+    """用过的文件夹，第一个是上次用的。"""
+    return web.json_response({"dirs": core.recent_dirs()})
 
 
 @routes.post("/api/outdir")
 async def set_outdir(request):
-    """pick=1 弹系统的文件夹选择框；否则直接用传来的路径。"""
+    """pick=1 弹系统的文件夹选择框，选完记下来；否则只是把传来的路径挪到最前面。"""
     body = await request.json()
     path = body.get("dir")
     if body.get("pick"):
@@ -366,14 +367,15 @@ async def set_outdir(request):
             log.warning("选择文件夹失败: %r", e)
             return web.json_response({"error": str(e)}, status=400)
         if not path:
-            return ok(cancelled=True, dir=str(core.DEFAULT_OUT))
+            return ok(cancelled=True, dirs=core.recent_dirs())
     if not path:
         return web.json_response({"error": "没给路径"}, status=400)
     try:
-        core.save_download_dir(path)
+        Path(path).expanduser().mkdir(parents=True, exist_ok=True)
+        core.remember_dir(path)
     except OSError as e:
         return web.json_response({"error": str(e)}, status=400)
-    return ok(dir=str(core.DEFAULT_OUT))
+    return ok(dirs=core.recent_dirs())
 
 
 @routes.post("/api/send")
@@ -422,6 +424,12 @@ async def start(request):
     targets = [t for t in body.get("targets", []) if t not in ("", None)]
     if not targets:
         return web.json_response({"error": core.tr("没有要下载的")}, status=400)
+    if d := body.get("out_dir"):
+        try:
+            Path(d).expanduser().mkdir(parents=True, exist_ok=True)
+            core.remember_dir(d)
+        except OSError as e:
+            return web.json_response({"error": str(e)}, status=400)
     new = app.start(targets, body)
     if not new:
         return web.json_response({"error": core.tr("消息找不到了，重新打开这个聊天再试")}, status=400)
@@ -462,13 +470,9 @@ async def files(request):
 async def open_path(request):
     """打开下载目录里的文件夹或文件；reveal=1 时在资源管理器里选中它。"""
     body = await request.json()
-    rel = body.get("rel") or ""
-    path = under_downloads(rel) if rel else core.DEFAULT_OUT
-    if body.get("path"):  # 任务里给的是绝对路径
-        path = Path(body["path"]).resolve()
-        if core.DEFAULT_OUT.resolve() not in (path, *path.parents):
-            raise web.HTTPForbidden()
-    if not rel:
+    want = body.get("path") or ""
+    path = under_downloads(want) if want else core.DEFAULT_OUT
+    if not want:
         path.mkdir(parents=True, exist_ok=True)
     if not path.exists():
         return web.json_response({"error": core.tr("文件不见了，可能被删了")}, status=404)
@@ -527,6 +531,7 @@ async def main():
         site = web.TCPSite(runner, "127.0.0.1", 0)
         await site.start()
     port = site._server.sockets[0].getsockname()[1]
+    core.load_index()
     PORT_FILE.write_text(str(port))
     url = f"http://127.0.0.1:{port}/"
     log.info("界面地址 %s", url)
@@ -542,6 +547,7 @@ async def main():
         if (app.closed_at and now - app.closed_at > 3) or now - app.last_seen > 90:
             break
 
+    core.save_index()
     log.info("窗口已关闭，退出")
     app.cancel()
     await asyncio.sleep(0.5)
