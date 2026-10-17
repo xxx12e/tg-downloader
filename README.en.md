@@ -26,6 +26,7 @@ Chat list on the left, message bubbles on the right — much like the app you us
 - **Links actually work**: `t.me` links jump straight to that channel, message or comment; `@usernames`, `#hashtags` and reply quotes are all clickable
 - "💬 N comments" under a channel post opens the comment thread, just like on mobile
 - In-chat search; Esc or the mouse back button to go back
+- **Dark mode** — 🌙 in the top left, follows your system setting by default
 - **Bilingual UI** — switch between English and Chinese from the top left (job logs and statuses follow too)
 - **You can send messages** — composer at the bottom: Enter to send, replies, photos and files, delete your own
 
