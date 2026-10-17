@@ -295,6 +295,12 @@ async def stream(request):
         start, stop = max(0, size + start), size
     if start >= size:
         return web.Response(status=416, headers={"Content-Range": f"bytes */{size}"})
+    if start == 0 and size > 2 * core.CHUNK:
+        asyncio.create_task(core.warm_media(app.client, msg.document, size))
+    # 浏览器常发 bytes=0- 这种不带结尾的请求，它取一点就会掐断重发；
+    # 一次最多给 16 MB，免得白白占着线路传后面用不上的数据
+    if r.stop is None and stop - start > 16 * 1024 * 1024:
+        stop = start + 16 * 1024 * 1024
     partial = "Range" in request.headers
     resp = web.StreamResponse(status=206 if partial else 200, headers={
         "Content-Type": mime, "Accept-Ranges": "bytes", "Content-Length": str(stop - start),
@@ -320,6 +326,18 @@ async def stream(request):
         except ConnectionError:  # 播放器拖进度条/关掉了，会断开旧请求，正常（Windows 上报的是 Connection lost）
             break
     return resp
+
+
+@routes.post("/api/warm")
+async def warm(request):
+    """点开视频/音频时先调这个，把开头和结尾并发抓进缓存，省掉播放器来回试探的等待。"""
+    try:
+        msg = cached_msg(await request.json())
+    except web.HTTPNotFound:
+        return ok(skipped=True)
+    if msg.document and (msg.file.size or 0) > 2 * core.CHUNK:
+        asyncio.create_task(core.warm_media(app.client, msg.document, msg.file.size))
+    return ok()
 
 
 @routes.get("/api/avatar")

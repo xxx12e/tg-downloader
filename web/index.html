@@ -1277,6 +1277,7 @@ function askDir(what) {
       $("dirCancel").onclick = () => { closeModal(); resolve(null); };
       $("dirOk").onclick = () => {
         const i = +document.querySelector("#modalBox input[name=dir]:checked").value;
+        modalCancel = null;          // 先清掉，否则 closeModal 会抢先把结果变成"取消"
         closeModal(); resolve(dirs[i]);
       };
     };
@@ -1303,7 +1304,12 @@ function previewKind(m) {  // 这个文件在窗口里怎么看
   if (mt.startsWith("text/") || /\.(txt|log|md|json|srt|ass|ssa|vtt|lrc|csv|ini|xml|ya?ml|nfo)$/i.test(m.name || "")) return "text";
   return "info";
 }
+function warmUp(m) {   // 先让后台把开头和结尾抓进缓存，播放器一来就能拿到
+  if (!m.done && ["video", "audio"].includes(previewKind(m)))
+    api("/api/warm", "POST", { chat: cur.chat, post: m.vp, id: m.id }).catch(() => {});
+}
 function preview(m, it) {
+  warmUp(m);
   if (previewKind(m) === "audio") return playAudio(m, it);
   openViewer(m.key);
 }
@@ -1377,7 +1383,11 @@ function syncViewerButtons() {
 }
 function viewStep(d) {
   const keys = viewKeys(), i = keys.indexOf(viewing);
-  if (i >= 0 && keys[i + d]) openViewer(keys[i + d]);
+  if (i >= 0 && keys[i + d]) {
+    openViewer(keys[i + d]);
+    const nxt = cur.media.get(keys[i + d * 2]);   // 顺手预热再下一个
+    if (nxt) warmUp(nxt.m);
+  }
 }
 function closeViewer() { stopStage(); $("viewer").classList.add("hidden"); viewing = null; }
 

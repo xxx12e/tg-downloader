@@ -8,7 +8,7 @@ import os
 import re
 import shutil
 import socket
-from collections import deque
+from collections import OrderedDict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -258,7 +258,7 @@ async def connect(cfg):
         log.info("连接 Telegram（%s）", proxy or "直连")
         client = TelegramClient(
             str(SESSION), api_id, api_hash, proxy=parse_proxy(proxy),
-            flood_sleep_threshold=900, connection_retries=5, retry_delay=2, request_retries=10, timeout=10,
+            flood_sleep_threshold=900, connection_retries=5, retry_delay=2, request_retries=10, timeout=30,
         )
         try:
             await asyncio.wait_for(client.connect(), 25)
@@ -844,6 +844,8 @@ class LanePool:
         最少也给 floor 路（宁可挤一下下载，也不能让视频卡住）；此时 free 会变成负数，下载那边自然就让出来了。"""
         async with self.cond:
             got = max(floor, min(want, self.free))
+            if got < 0:
+                got = 0
             self.free -= got
         try:
             yield got
@@ -893,16 +895,102 @@ async def download_file(client, msg, path, on_progress):
             raise RuntimeError(f"只拿到 {got}/{size} 字节")
         return str(path)
 
+# ---------------- 播放用的块缓存 ----------------
+# 很多手机拍的 mp4 把索引(moov)放在文件最后，浏览器得先取文件尾、再回到开头，
+# 同一段会被反复要好几次。缓存一下，第二次就不用再问 Telegram 了。
+CACHE_MAX = 96 * 1024 * 1024
+_cache = OrderedDict()   # (文件id, 偏移) -> bytes
+_cache_bytes = 0
+_fetching = {}           # 正在取的块，避免同一块同时取两遍
+_tail_done = set()       # 已经预取过文件尾的
+
+
+def cache_get(key):
+    if key in _cache:
+        _cache.move_to_end(key)
+        return _cache[key]
+    return None
+
+
+def cache_put(key, data):
+    global _cache_bytes
+    if key in _cache or not data:
+        return
+    _cache[key] = data
+    _cache_bytes += len(data)
+    while _cache_bytes > CACHE_MAX and _cache:
+        _, old = _cache.popitem(last=False)
+        _cache_bytes -= len(old)
+
+
+def cache_clear():
+    global _cache_bytes
+    _cache.clear()
+    _fetching.clear()
+    _tail_done.clear()
+    _cache_bytes = 0
+
+
+async def get_chunk(client, doc, size, offset):
+    """取一块，优先走缓存；同一块同时被要多次时只取一遍。"""
+    key = (doc.id, offset)
+    if (hit := cache_get(key)) is not None:
+        return hit
+    if key in _fetching:
+        return await asyncio.shield(_fetching[key])
+
+    async def go():
+        buf = b""
+        async for c in client.iter_download(doc, offset=offset, request_size=CHUNK, limit=1, file_size=size):
+            buf += c
+        cache_put(key, buf)
+        return buf
+
+    task = asyncio.ensure_future(go())
+    _fetching[key] = task
+    try:
+        return await task
+    finally:
+        _fetching.pop(key, None)
+
+
+async def warm_media(client, doc, size, head=4, tail=3):
+    """点开视频时先把开头和结尾一起抓进缓存。
+
+    很多手机拍的 mp4 把索引(moov)放在最后，浏览器要分三趟取：开头 → 文件尾 → 再回开头。
+    冷文件每趟都要三四秒，串起来就十几秒。这里一次性并发抓好，三趟就都是从缓存走了。"""
+    if doc.id in _tail_done or size <= CHUNK:
+        return
+    _tail_done.add(doc.id)
+    head_offs = list(range(0, min(head * CHUNK, size), CHUNK))
+    tail_from = max(len(head_offs) * CHUNK, ((size - tail * CHUNK) // CHUNK) * CHUNK)
+    # 文件尾排前面：播放器第一趟会自己取开头，卡住它的是取不到的文件尾
+    offs = list(range(tail_from, size, CHUNK)) + head_offs
+    try:
+        # 只用空着的线路。线路被播放器/下载占满时就不预取了 —— 网速紧张的时候
+        # 预取会和播放抢带宽，反而更卡。
+        async with LANES.take_free(3, floor=0) as got:
+            if not got:
+                _tail_done.discard(doc.id)
+                return
+            gate = asyncio.Semaphore(got)
+
+            async def one(o):
+                async with gate:
+                    await get_chunk(client, doc, size, o)
+
+            await asyncio.gather(*(one(o) for o in offs))
+    except Exception as e:
+        log.info("预取失败（不影响播放）: %r", e)
+        _tail_done.discard(doc.id)
+
 
 async def stream_chunks(client, doc, size, start, stop, lanes=STREAM_LANES):
     """按顺序产出 [start, stop) 这段数据，但同时预取后面几块，起播和拖进度条都快很多。"""
     offsets = list(range(start - start % CHUNK, stop, CHUNK))
 
     async def fetch(o):
-        buf = b""
-        async for c in client.iter_download(doc, offset=o, request_size=CHUNK, limit=1, file_size=size):
-            buf += c
-        return buf
+        return await get_chunk(client, doc, size, o)
 
     async with LANES.take_free(lanes) as got:
         flying = deque()  # [(这块的起点, 任务)]
