@@ -135,6 +135,9 @@ downloads/<chat name>_<id>/
 - `data/` holds your login session. **Never share it or commit it** (`.gitignore` already excludes it).
   To revoke: delete `data/tg.session`, then remove the session under **Settings → Devices** in Telegram.
 - This only saves content your own account can already see. **Keep what you download to yourself.**
+- **Executables posted in channels (exe / bat / py …) are never run when you click Open** — they're only shown in their folder, so you decide whether to double-click.
+  Downloaded files get the same "from the internet" mark a browser adds, so Windows warns before running them and Office opens documents in Protected View.
+- Don't keep the app folder inside OneDrive / Dropbox or another synced folder, or your login session in `data/` gets uploaded to the cloud.
 - Check `data/运行日志.txt` if something goes wrong.
 - Only tested on Windows.
 

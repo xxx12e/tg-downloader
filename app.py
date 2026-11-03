@@ -1,14 +1,19 @@
 """TG 下载器图形界面：本地小服务器 + Edge 应用窗口。双击 启动.bat 运行。"""
 import asyncio
+import base64
 import logging
 import mimetypes
 import msvcrt
 import os
+import re
 import secrets
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import webbrowser
+from collections import OrderedDict
 from contextlib import aclosing
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -37,6 +42,30 @@ TOKEN = load_token()
 
 log = logging.getLogger("tg")
 
+_bg = set()
+
+
+def bg(coro):
+    """后台跑一个任务。asyncio 只弱引用任务，不留引用的话可能跑到一半被回收。"""
+    task = asyncio.create_task(coro)
+    _bg.add(task)
+    task.add_done_callback(_bg.discard)
+    return task
+
+
+class Lru(OrderedDict):
+    """超过 cap 个就把最早放进来的扔掉。浏览得久了，消息和缩略图缓存不能无限涨。"""
+
+    def __init__(self, cap):
+        super().__init__()
+        self.cap = cap
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        self.move_to_end(key)
+        if len(self) > self.cap:
+            self.popitem(last=False)
+
 
 class App:
     def __init__(self):
@@ -49,8 +78,8 @@ class App:
         self.tasks = {}  # job.id -> asyncio.Task
         self.last_seen = time.time()
         self.closed_at = None  # 页面关闭时发来 /api/bye
-        self.msgs = {}  # (chat, post, id) -> 浏览时拿到的消息，下载/预览直接用
-        self.previews = {}  # 缩略图、头像缓存
+        self.msgs = Lru(50_000)  # (chat, post, id) -> 浏览时拿到的消息，下载/预览直接用
+        self.previews = Lru(3000)  # 缩略图、头像缓存（浏览器自己还有一层缓存）
         self.preview_sem = asyncio.Semaphore(12)  # 缩略图/头像同时拉几个
 
     # ---- 登录 ----
@@ -107,30 +136,63 @@ class App:
                 task.cancel()
 
     async def preview(self, key, make):
-        """缩略图/头像：并发限 6 个，结果缓存。"""
-        if key not in self.previews:
-            async with self.preview_sem:
-                if key not in self.previews:
-                    try:
-                        self.previews[key] = await make()
-                    except Exception as e:
-                        log.warning("预览失败 %s: %r", key, e)
-                        self.previews[key] = None
-        return self.previews[key]
+        """缩略图/头像：并发限 12 个，结果缓存。"""
+        if key in self.previews:
+            return self.previews[key]
+        async with self.preview_sem:
+            if key in self.previews:
+                return self.previews[key]
+            try:
+                data = await make()
+            except Exception as e:
+                log.warning("预览失败 %s: %r", key, e)
+                data = None
+            self.previews[key] = data
+            return data
 
 
 app = App()
 routes = web.RouteTableDef()
 
 
+def host_ok(request):
+    """只认 127.0.0.1 / localhost 加我们自己的端口。
+    防 DNS 重绑定：恶意网站把自己的域名改成解析到 127.0.0.1 以后，浏览器把它当“同源”，
+    就能读到首页里的 token、进而调所有接口（读消息、发消息、下载并打开文件）。它发来的 Host 是它自己的域名。"""
+    sock = request.transport.get_extra_info("sockname") if request.transport else None
+    port = sock[1] if sock else None
+    return (request.headers.get("Host") or "").lower() in (f"127.0.0.1:{port}", f"localhost:{port}")
+
+
+def token_ok(request):
+    want = TOKEN.encode()
+    return any(secrets.compare_digest(want, (x or "").encode())  # 定长比较，不给按耗时猜 token 的机会
+               for x in (request.headers.get("X-Token"), request.query.get("t")))  # <img> 没法带请求头，走 ?t=
+
+
 @web.middleware
 async def guard(request, handler):
-    if request.path.startswith("/api/"):
-        if TOKEN not in (request.headers.get("X-Token"), request.query.get("t")):  # <img> 没法带请求头，走 ?t=
+    if not host_ok(request):
+        raise web.HTTPForbidden()
+    if request.path != "/":  # 除了首页，全部要 token（白名单比“只管 /api/”更不容易漏）
+        if not token_ok(request):
             raise web.HTTPForbidden()
         app.last_seen = time.time()
         app.closed_at = time.time() if request.path == "/api/bye" else None
     return await handler(request)
+
+
+# 首页：脚本、样式、图片、请求都只许来自本机这个服务；不许被别的网页套在 iframe 里
+PAGE_CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; media-src 'self'; frame-src 'self'; connect-src 'self'; object-src 'none'; "
+            "base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+
+
+async def security_headers(_, resp):
+    """每个响应（包括边下边播那种流式响应）发出去前都加上。"""
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")  # 地址里带着 ?t=token，任何时候都别外传
+    resp.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
 
 
 def ok(**kw):
@@ -153,7 +215,8 @@ def under_downloads(path):
 @routes.get("/")
 async def index(_):
     html = (WEB / "index.html").read_text("utf-8").replace("{{TOKEN}}", TOKEN)
-    return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-store"})
+    return web.Response(text=html, content_type="text/html",
+                        headers={"Cache-Control": "no-store", "Content-Security-Policy": PAGE_CSP})
 
 
 # ---- 登录 ----
@@ -174,7 +237,7 @@ async def password(request):
 @routes.post("/api/retry")
 async def retry(_):
     if app.stage == "error":
-        asyncio.create_task(app.boot())
+        bg(app.boot())
     return ok()
 
 
@@ -234,7 +297,8 @@ async def join(request):
 async def open_url(request):
     """普通网址用系统默认浏览器打开。只放行 http/https/mailto，防止消息里的怪链接调起别的程序。"""
     url = (await request.json()).get("url", "").strip()
-    if urlparse(url).scheme.lower() not in ("http", "https", "mailto"):
+    # 再拒掉空白和控制字符：urlparse 会悄悄去掉 Tab/换行再判断，交给系统打开的却是原样的字符串
+    if urlparse(url).scheme.lower() not in ("http", "https", "mailto") or re.search(r"[\x00-\x20\x7f]", url):
         raise web.HTTPForbidden()
     webbrowser.open(url)
     return ok()
@@ -267,6 +331,25 @@ async def photo(request):
 PLAY_MIME = {"video/quicktime": "video/mp4", "video/x-matroska": "video/webm", "audio/x-m4a": "audio/mp4"}
 
 
+def stream_headers(ct):
+    """边下边播/读本地文件时的类型和防护头。
+
+    文件类型（mime）是发文件的人自己填的，可以是 text/html 或带脚本的 SVG。这些内容和界面同源，
+    要是被当成网页打开（比如在大图上右键“在新标签页中打开图片”），里面的脚本就能拿到 token。
+    所以：只原样给音视频/图片/PDF，网页之类的一律降成纯文本或二进制；再加 CSP sandbox，
+    就算被直接打开，脚本也跑不起来、也不算同源。PDF 例外（加了 sandbox 浏览器就不肯显示 PDF）。"""
+    ct = (ct or "").split(";")[0].strip().lower()
+    ct = PLAY_MIME.get(ct, ct)
+    if not re.fullmatch(r"[a-z0-9.+-]+/[a-z0-9.+-]+", ct):
+        ct = "application/octet-stream"
+    elif not (ct == "application/pdf" or ct.startswith(("video/", "audio/", "image/"))):
+        ct = "text/plain" if ct.startswith("text/") else "application/octet-stream"
+    h = {"Content-Type": ct, "Content-Disposition": "inline", "Cache-Control": "no-store"}
+    if ct != "application/pdf":
+        h["Content-Security-Policy"] = "sandbox"
+    return h
+
+
 @routes.get("/api/stream")
 async def stream(request):
     """在线预览/播放：边下边播，支持拖进度条（Range）。不落盘；已经下载过的直接读本地文件。"""
@@ -275,11 +358,7 @@ async def stream(request):
         try:
             path = under_downloads(q["path"])
             if path.is_file():
-                headers = {"Content-Disposition": "inline", "Cache-Control": "no-store"}
-                ct = mimetypes.guess_type(path.name)[0]
-                if ct:
-                    headers["Content-Type"] = PLAY_MIME.get(ct, ct)
-                return web.FileResponse(path, headers=headers)
+                return web.FileResponse(path, headers=stream_headers(mimetypes.guess_type(path.name)[0]))
         except web.HTTPForbidden:
             pass
     key = (int(q["chat"]), int(q.get("post") or 0), int(q["id"]))
@@ -287,7 +366,6 @@ async def stream(request):
     if not msg.document or not msg.file.size:
         raise web.HTTPNotFound()
     size = msg.file.size
-    mime = PLAY_MIME.get(msg.file.mime_type, msg.file.mime_type) or "application/octet-stream"
     r = request.http_range
     start = r.start or 0
     stop = size if r.stop is None else min(r.stop, size)
@@ -296,15 +374,14 @@ async def stream(request):
     if start >= size:
         return web.Response(status=416, headers={"Content-Range": f"bytes */{size}"})
     if start == 0 and size > 2 * core.CHUNK:
-        asyncio.create_task(core.warm_media(app.client, msg.document, size))
+        bg(core.warm_media(app.client, msg.document, size))
     # 浏览器常发 bytes=0- 这种不带结尾的请求，它取一点就会掐断重发；
     # 一次最多给 16 MB，免得白白占着线路传后面用不上的数据
     if r.stop is None and stop - start > 16 * 1024 * 1024:
         stop = start + 16 * 1024 * 1024
     partial = "Range" in request.headers
     resp = web.StreamResponse(status=206 if partial else 200, headers={
-        "Content-Type": mime, "Accept-Ranges": "bytes", "Content-Length": str(stop - start),
-        "Content-Disposition": "inline", "Cache-Control": "no-store"})
+        **stream_headers(msg.file.mime_type), "Accept-Ranges": "bytes", "Content-Length": str(stop - start)})
     if partial:
         resp.headers["Content-Range"] = f"bytes {start}-{stop - 1}/{size}"
     await resp.prepare(request)
@@ -336,7 +413,7 @@ async def warm(request):
     except web.HTTPNotFound:
         return ok(skipped=True)
     if msg.document and (msg.file.size or 0) > 2 * core.CHUNK:
-        asyncio.create_task(core.warm_media(app.client, msg.document, msg.file.size))
+        bg(core.warm_media(app.client, msg.document, msg.file.size))
     return ok()
 
 
@@ -352,14 +429,18 @@ async def avatar(request):
 
 
 # ---- 下载 ----
-PICK_PS = """
+# 路径和提示文字走环境变量，不拼进脚本：拼接的话路径里的 ’ 之类（PowerShell 也当引号）会把脚本弄坏。
+# 选中的路径按 UTF-8 转 Base64 输出：控制台默认用 OEM 代码页，中文/特殊字符的文件夹名会变成乱码
+PICK_PS = r"""
 Add-Type -AssemblyName System.Windows.Forms
 $d = New-Object System.Windows.Forms.FolderBrowserDialog
-$d.Description = 'DESC'
+$d.Description = $env:TGDL_DESC
 $d.ShowNewFolderButton = $true
-if (Test-Path 'CUR') { $d.SelectedPath = 'CUR' }
+if ($env:TGDL_CUR -and (Test-Path -LiteralPath $env:TGDL_CUR)) { $d.SelectedPath = $env:TGDL_CUR }
 $top = New-Object System.Windows.Forms.Form -Property @{TopMost = $true}
-if ($d.ShowDialog($top) -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($d.SelectedPath) }
+if ($d.ShowDialog($top) -eq [System.Windows.Forms.DialogResult]::OK) {
+  [Console]::Out.Write([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($d.SelectedPath)))
+}
 """
 
 
@@ -371,23 +452,25 @@ async def get_outdir(_):
 
 @routes.post("/api/outdir")
 async def set_outdir(request):
-    """pick=1 弹系统的文件夹选择框，选完记下来；否则只是把传来的路径挪到最前面。"""
+    """pick=1 弹系统的文件夹选择框，选完记下来；否则只是把列表里已有的路径挪到最前面。
+    新文件夹只能经选择框（要人亲手点）加进来：列表就是“允许读写的文件夹”白名单，接口不能自己往里加。"""
     body = await request.json()
     path = body.get("dir")
     if body.get("pick"):
-        desc = "选择下载文件夹" if core.LANG == "zh" else "Choose a download folder"
-        script = PICK_PS.replace("DESC", desc).replace("CUR", str(core.DEFAULT_OUT).replace("'", "''"))
+        env = {**os.environ, "TGDL_CUR": core.recent_dirs()[0],
+               "TGDL_DESC": "选择下载文件夹" if core.LANG == "zh" else "Choose a download folder"}
         try:
-            r = await asyncio.to_thread(subprocess.run, ["powershell", "-STA", "-NoProfile", "-Command", script],
-                                        capture_output=True, text=True, timeout=300)
-            path = (r.stdout or "").strip()
+            r = await asyncio.to_thread(subprocess.run, ["powershell", "-STA", "-NoProfile", "-Command", PICK_PS],
+                                        capture_output=True, text=True, timeout=300, env=env)
+            out = (r.stdout or "").strip()
+            path = base64.b64decode(out).decode("utf-8") if out else ""
         except Exception as e:
             log.warning("选择文件夹失败: %r", e)
             return web.json_response({"error": str(e)}, status=400)
         if not path:
             return ok(cancelled=True, dirs=core.recent_dirs())
-    if not path:
-        return web.json_response({"error": "没给路径"}, status=400)
+    elif not path or not core.is_known_dir(path):
+        return web.json_response({"error": core.tr("只能下到列表里的文件夹；新文件夹请点“选择其他文件夹…”")}, status=400)
     try:
         Path(path).expanduser().mkdir(parents=True, exist_ok=True)
         core.remember_dir(path)
@@ -396,30 +479,47 @@ async def set_outdir(request):
     return ok(dirs=core.recent_dirs())
 
 
+async def read_upload(request, folder):
+    """multipart 边收边写到 folder 里，文件名保持原样（发出去对方看到的就是这个名字）。
+    不用 request.post()：它把整个文件读进内存，而且 aiohttp 默认超过 1 MB 直接拒收 —— 手机照片大多超过 1 MB。"""
+    fields, path = {}, None
+    reader = await request.multipart()
+    async for part in reader:
+        if part.name == "file" and part.filename:
+            path = Path(folder) / core.safe(part.filename)
+            with open(path, "wb") as f:
+                while chunk := await part.read_chunk(1024 * 1024):
+                    f.write(chunk)
+        elif part.name:
+            fields[part.name] = await part.text()
+    return fields, path
+
+
 @routes.post("/api/send")
 async def send_msg(request):
     """发文字或文件。文件走 multipart，文字走 JSON。"""
     if app.stage != "ready":
         return web.json_response({"error": core.tr("还没登录")}, status=400)
+    folder = None
     try:
         if request.content_type.startswith("multipart/"):
-            data = await request.post()
-            up = data.get("file")
-            blob = up.file.read() if up is not None else None
-            body = {k: data.get(k) for k in ("chat", "post", "text", "reply_to")}
-            name = getattr(up, "filename", None)
+            folder = tempfile.mkdtemp(prefix="tgdl-up-")
+            body, path = await read_upload(request, folder)
         else:
-            body, blob, name = await request.json(), None, None
+            body, path = await request.json(), None
         msg = await core.send(
             app.client, int(body["chat"]), text=body.get("text") or "",
             reply_to=int(body.get("reply_to") or 0) or None,
             comment_to=int(body.get("post") or 0) or None,
-            file=blob, name=name)
+            file=path)
     except errors.FloodWaitError as e:
         return web.json_response({"error": core.tr("被限流，等 {sec} 秒", sec=e.seconds)}, status=429)
     except Exception as e:
         log.exception("发送失败")
         return web.json_response({"error": core.tr("发不出去：{e}", e=e)}, status=400)
+    finally:
+        if folder:
+            shutil.rmtree(folder, ignore_errors=True)
     app.chats = None  # 列表里的“最后一条消息”变了
     return ok(id=msg.id)
 
@@ -430,7 +530,7 @@ async def delete_msg(request):
     try:
         await core.delete_msg(app.client, int(b["chat"]), int(b["id"]), bool(b.get("both", True)))
     except Exception as e:
-        return web.json_response({"error": core.tr("发不出去：{e}", e=e)}, status=400)
+        return web.json_response({"error": core.tr("删不掉：{e}", e=e)}, status=400)
     return ok()
 
 
@@ -443,6 +543,8 @@ async def start(request):
     if not targets:
         return web.json_response({"error": core.tr("没有要下载的")}, status=400)
     if d := body.get("out_dir"):
+        if not core.is_known_dir(d):  # 只能下到选择框选过的文件夹里
+            return web.json_response({"error": core.tr("只能下到列表里的文件夹；新文件夹请点“选择其他文件夹…”")}, status=400)
         try:
             Path(d).expanduser().mkdir(parents=True, exist_ok=True)
             core.remember_dir(d)
@@ -494,11 +596,14 @@ async def open_path(request):
         path.mkdir(parents=True, exist_ok=True)
     if not path.exists():
         return web.json_response({"error": core.tr("文件不见了，可能被删了")}, status=404)
-    if body.get("reveal"):
+    # 频道里发的 exe/bat/py 等，点一下“打开”就直接运行了。和 Telegram 一样不直接打开：
+    # 只在文件夹里选中它，由你自己确认后再双击（文件带了“来自网络”标记，Windows 还会再提示一次）
+    risky = path.is_file() and path.suffix.lower() in core.RISKY_EXT
+    if body.get("reveal") or risky:
         subprocess.Popen(["explorer", "/select,", str(path)])
     else:
         os.startfile(path)
-    return ok()
+    return ok(risky=path.suffix.lower() if risky else None)
 
 
 # ---------------- 启动 ----------------
@@ -539,6 +644,7 @@ async def main():
         return
 
     webapp = web.Application(middlewares=[guard])
+    webapp.on_response_prepare.append(security_headers)
     webapp.add_routes(routes)
     runner = web.AppRunner(webapp, access_log=None)
     await runner.setup()
@@ -554,15 +660,16 @@ async def main():
     url = f"http://127.0.0.1:{port}/"
     log.info("界面地址 %s", url)
 
-    asyncio.create_task(app.boot())
+    bg(app.boot())
     if "--no-window" not in sys.argv:
         open_window(url)
     # Edge 会把窗口转交给别的进程，没法直接等它结束。改成：页面关闭时发 /api/bye，
-    # 3 秒内没有新请求（不是刷新）就退出；万一 bye 没发出去，90 秒没动静也退出。
+    # 3 秒内没有新请求（不是刷新）就退出；万一 bye 没发出去，90 秒没动静也退出 ——
+    # 但还有任务在下载时不按“没动静”退出（窗口最小化久了，浏览器会把页面的定时器压到一分钟一次甚至冻结）。
     while True:
         await asyncio.sleep(1)
         now = time.time()
-        if (app.closed_at and now - app.closed_at > 3) or now - app.last_seen > 90:
+        if (app.closed_at and now - app.closed_at > 3) or (now - app.last_seen > 90 and not app.running):
             break
 
     core.save_index()

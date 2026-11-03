@@ -415,6 +415,7 @@ const I18N = {
   // 右键菜单
   "预览": "Preview", "播放": "Play", "用电脑上的程序打开": "Open with default app", "在文件夹中显示": "Show in folder",
   "下载这个文件": "Download this file", "选中 / 取消选中": "Select / deselect", "复制文字": "Copy text", "已复制": "Copied",
+  "删除这条消息？": "Delete this message?", "所有人那边都会删掉，删了不能恢复。": "It will be deleted for everyone. This can't be undone.",
   // 选择模式
   "已选": "Selected ", "条": "", "个文件": " files", "全选已加载": "Select all loaded",
   "连评论区一起下": "Include comments", "取消": "Cancel", "⬇ 下载选中的": "⬇ Download selected",
@@ -997,11 +998,20 @@ function onMsgMenu(e) {
   if (it !== cur.postItem) items.push([t(cur.selecting ? "选中 / 取消选中" : "选择"), () => { if (!cur.selecting) toggleSelect(); toggleSel(it); }]);
   if (it.text) items.push([t("复制文字"), () => navigator.clipboard.writeText(it.text).then(() => toast(t("已复制")))]);
   if ($("msgIn") && it !== cur.postItem) items.push([t("回复"), () => setReply(it)]);
-  if (it.out) items.push([t("删除"), async () => {
-    try { await api("/api/delete", "POST", { chat: cur.chat, id: it.ids[0] }); cur.items = cur.items.filter(x => x !== it); renderMsgs(); loadChats(true); }
-    catch (e) { toast(e.message); }
-  }]);
+  if (it.out) items.push([t("删除"), () => confirmDelete(it)]);
   showMenu(e.clientX, e.clientY, items);
+}
+function confirmDelete(it) {  // 删了对所有人都没了，撤不回来：先问一句（TG 也会问）
+  const v = cur;
+  $("modalBox").innerHTML = `<h3>${t("删除这条消息？")}</h3>
+    <div style="color:var(--sub);font-size:14px">${t("所有人那边都会删掉，删了不能恢复。")}</div>
+    <div class="foot"><button class="btn" onclick="closeModal()">${t("取消")}</button><button class="btn fill" id="delOk" style="background:var(--red)">${t("删除")}</button></div>`;
+  $("delOk").onclick = async () => {
+    closeModal();
+    try { await api("/api/delete", "POST", { chat: v.chat, id: it.ids[0] }); v.items = v.items.filter(x => x !== it); if (v === cur) renderMsgs(); loadChats(true); }
+    catch (e) { toast(e.message); }
+  };
+  $("modal").classList.remove("hidden");
 }
 function showMenu(x, y, items) {
   const m = $("menu");
@@ -1160,7 +1170,13 @@ async function pollJobs() {
     </div>`;
   }).join("") : `<div class="empty">${t("还没有下载任务")}<br><br>${t("在聊天里点图片/文件上的 ⬇，或者点右上角“下载全部”")}</div>`;
 }
-function openPath(path, reveal) { api("/api/open", "POST", { path, reveal: reveal ? 1 : 0 }).catch(e => toast(e.message)); }
+function openPath(path, reveal) {
+  api("/api/open", "POST", { path, reveal: reveal ? 1 : 0 })
+    .then(r => { if (r.risky) toast(LANG === "en"
+      ? `${r.risky} files can run code and may be malware — shown in its folder instead. Open it yourself only if you trust it.`
+      : `${r.risky} 文件能直接运行程序，可能带病毒，没有直接打开，已在文件夹里选中。确认可信再自己双击。`); })
+    .catch(e => toast(e.message));
+}
 
 
 /* ================= 发消息 ================= */
@@ -1325,7 +1341,7 @@ function stopStage() {  // 换下一个/关掉时一定要停掉，不然视频�
 }
 function infoCard(m, why) {
   return `<div class="vinfo"><div class="big">${FILE_ICON[previewKind(m)] || "📄"}</div><b>${esc(m.name || t(m.label))}</b>
-    <span>${[size(m.size), m.mime].filter(Boolean).join(" · ")}</span><div style="margin-top:12px;color:#ccc">${esc(why)}</div></div>`;
+    <span>${esc([size(m.size), m.mime].filter(Boolean).join(" · "))}</span><div style="margin-top:12px;color:#ccc">${esc(why)}</div></div>`;
 }
 async function openViewer(key) {
   const rec = cur.media.get(key); if (!rec) return;

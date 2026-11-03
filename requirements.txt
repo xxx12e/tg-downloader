@@ -1,4 +1,4 @@
-telethon>=1.36
+telethon>=1.36,<2
 python-socks[asyncio]
 cryptg
 qrcode[pil]

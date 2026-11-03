@@ -85,6 +85,9 @@ EN = {
     "找不到消息 {id}": "Message {id} not found",
     "消息是空的": "Message is empty",
     "发不出去：{e}": "Couldn't send: {e}",
+    "删不掉：{e}": "Couldn't delete: {e}",
+    "只能下到列表里的文件夹；新文件夹请点“选择其他文件夹…”":
+        "You can only download to a folder in the list — use “Choose another folder…” to add one",
     "这里不能发言": "You can't post here",
     "发送中…": "Sending…",
     "读不到消息：{e}": "Can't read messages: {e}",
@@ -106,7 +109,9 @@ def tr(s, **kw):
 # ---------------- 工具函数 ----------------
 
 def safe(name, maxlen=150):
-    name = re.sub(r'[\\/:*?"<>|\r\n\t]', "_", name).strip(" .")
+    # 控制字符 Windows 文件名里不让用；方向控制符（U+202E 之类）能把 “x‮gpj.exe” 显示成 “xexe.jpg”，伪装扩展名
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f\x7f]', "_", name)
+    name = re.sub(r"[‎‏‪-‮⁦-⁩]", "", name).strip(" .")
     if len(name) > maxlen:
         stem, ext = os.path.splitext(name)
         name = stem[: maxlen - len(ext)] + ext
@@ -191,12 +196,18 @@ def load_config():
 
 
 def recent_dirs():
-    """用过的下载文件夹，最近的在前。第一个就是默认值。"""
+    """用过的下载文件夹，最近的在前。第一个就是默认值。默认的 downloads 文件夹始终在列表里。"""
     cfg = load_config()
-    dirs = [d for d in (cfg.get("recent_dirs") or []) if d]
+    dirs = [d for d in (cfg.get("recent_dirs") or []) if d][:8]
     if str(DEFAULT_OUT) not in dirs:
-        dirs.append(str(DEFAULT_OUT))
-    return dirs[:8]
+        dirs = dirs[:7] + [str(DEFAULT_OUT)]  # 原来是先追加再截断，用满 8 个以后默认文件夹会被挤掉
+    return dirs
+
+
+def is_known_dir(path):
+    """是不是列表里已有的下载文件夹（不含子文件夹）。新文件夹只能经系统的选择框加进来。"""
+    p = Path(path).expanduser().resolve()
+    return any(p == Path(d).resolve() for d in recent_dirs())
 
 
 def remember_dir(path):
@@ -213,11 +224,32 @@ def allowed_dir(path):
     """只允许读写下载过的文件夹，防止别的网页借接口乱翻硬盘。"""
     p = Path(path).expanduser().resolve()
     roots = [Path(d).resolve() for d in recent_dirs()]
-    return any(p == r or r in p.parents for r in roots)
+    if any(p == r or r in p.parents for r in roots):
+        return True
+    # 文件夹被挤出“最近 8 个”以后，以前下到那里的文件也要还能打开：认得出是自己下的就放行
+    target = os.path.normcase(str(p))
+    inside = target.rstrip("\\/") + os.sep
+    for v in DOWNLOADED.values():
+        n = os.path.normcase(os.path.abspath(v))
+        if n == target or n.startswith(inside):
+            return True
+    return False
+
+
+def write_atomic(path, text):
+    """先写临时文件再换过去：写到一半被强关，旧文件还是完整的（不会把下载记录/配置写坏）。"""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, "utf-8")
+    os.replace(tmp, path)
 
 
 def save_config(cfg):
-    CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), "utf-8")
+    write_atomic(CONFIG, json.dumps(cfg, ensure_ascii=False, indent=2))
+
+
+def hide_secret(proxy):
+    """日志里不写代理的用户名密码（socks5://user:pass@host:port）。"""
+    return re.sub(r"(^|//)[^@/]+@", r"\1***@", proxy) if proxy else proxy
 
 
 def port_open(port):
@@ -255,7 +287,7 @@ async def connect(cfg):
         raise ValueError(tr(NEED_API))
     DATA.mkdir(exist_ok=True)
     for proxy in proxy_candidates(cfg):
-        log.info("连接 Telegram（%s）", proxy or "直连")
+        log.info("连接 Telegram（%s）", hide_secret(proxy) or "直连")
         client = TelegramClient(
             str(SESSION), api_id, api_hash, proxy=parse_proxy(proxy),
             flood_sleep_threshold=900, connection_retries=5, retry_delay=2, request_retries=10, timeout=30,
@@ -457,9 +489,33 @@ def note_file(fid, path):
 
 def save_index():
     try:
-        INDEX_FILE.write_text(json.dumps(DOWNLOADED, ensure_ascii=False), "utf-8")
+        write_atomic(INDEX_FILE, json.dumps(DOWNLOADED, ensure_ascii=False))
     except OSError as e:
         log.warning("下载记录存不下来: %r", e)
+
+
+# Windows 上能直接运行代码的文件类型。电脑上肯定装了 Python（这个程序就靠它跑），所以 .py 也算
+RISKY_EXT = {
+    ".exe", ".com", ".scr", ".pif", ".bat", ".cmd", ".msi", ".msp", ".msix", ".msixbundle", ".appx",
+    ".appxbundle", ".appinstaller", ".application", ".appref-ms", ".gadget", ".cpl", ".msc", ".hta",
+    ".jar", ".js", ".jse", ".vb", ".vbs", ".vbe", ".wsf", ".wsh", ".ws", ".wsc", ".ps1", ".psm1",
+    ".psd1", ".ps1xml", ".psc1", ".reg", ".inf", ".lnk", ".url", ".website", ".scf", ".chm", ".dll",
+    ".sys", ".iso", ".img", ".vhd", ".vhdx", ".library-ms", ".settingcontent-ms", ".theme",
+    ".themepack", ".diagcab", ".xll", ".xlam", ".docm", ".dotm", ".xlsm", ".xltm", ".pptm", ".potm",
+    ".ppam", ".sldm", ".py", ".pyw", ".pyz", ".pyzw", ".pyc", ".pyo",
+}
+
+
+def mark_from_internet(path):
+    """给下载的文件打上“来自网络”标记（Mark of the Web），和浏览器下载的一样：
+    运行 exe 会有 SmartScreen 提示，Office 文档里的宏默认被拦。只在 Windows 的 NTFS 上有效，失败就算了。"""
+    if os.name != "nt":
+        return
+    try:
+        with open(f"{path}:Zone.Identifier", "wb") as f:
+            f.write(b"[ZoneTransfer]\r\nZoneId=3\r\n")
+    except OSError:
+        pass
 
 
 def forward_name(m):
@@ -738,14 +794,12 @@ async def join_invite(client, invite):
     return {"chat": chat_info(chat)} if chat else {"error": tr("已加入，刷新一下左边列表就能看到")}
 
 
-async def send(client, chat, text=None, reply_to=None, comment_to=None, file=None, name=None):
-    """发消息。comment_to 不为空 = 发到某条帖子的评论区。"""
+async def send(client, chat, text=None, reply_to=None, comment_to=None, file=None):
+    """发消息。comment_to 不为空 = 发到某条帖子的评论区。file = 本地文件路径（文件名就是发出去的名字）。"""
     entity = await resolve(client, chat)
     kw = dict(reply_to=reply_to or None, comment_to=comment_to or None)
     if file is not None:
-        f = io.BytesIO(file)
-        f.name = name or "file"
-        msg = await client.send_file(entity, f, caption=(text or None), force_document=False, **kw)
+        msg = await client.send_file(entity, str(file), caption=(text or None), force_document=False, **kw)
     else:
         if not (text or "").strip():
             raise ValueError(tr("消息是空的"))
@@ -810,7 +864,7 @@ class TextLog:
         self.txt.close()
         self.jsonl.close()
         self.state["text_last_id"] = self.last
-        self.state_path.write_text(json.dumps(self.state), "utf-8")
+        write_atomic(self.state_path, json.dumps(self.state))
 
 
 FILES = {}  # "chat:msg" -> {"s": queued/loading/done/fail, "got", "size", "rel"}，给界面显示每个文件的状态
@@ -890,7 +944,15 @@ async def download_file(client, msg, path, on_progress):
                     got += len(chunk)
                     on_progress(got, size)
 
-            await asyncio.gather(*(lane(i) for i in range(lanes)))
+            # 一路出错时 gather 不会停掉别的路：它们会接着往已经关掉的文件里写、还占着线路。
+            # 所以不管成功、失败还是被停止，出来之前都把各路收干净
+            tasks = [asyncio.create_task(lane(i)) for i in range(lanes)]
+            try:
+                await asyncio.gather(*tasks)
+            finally:
+                for t in tasks:
+                    t.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
         if got != size:
             raise RuntimeError(f"只拿到 {got}/{size} 字节")
         return str(path)
@@ -901,7 +963,7 @@ async def download_file(client, msg, path, on_progress):
 CACHE_MAX = 96 * 1024 * 1024
 _cache = OrderedDict()   # (文件id, 偏移) -> bytes
 _cache_bytes = 0
-_fetching = {}           # 正在取的块，避免同一块同时取两遍
+_fetching = {}           # 正在取的块，避免同一块同时取两遍：key -> {"task", "n": 几个人在等}
 _tail_done = set()       # 已经预取过文件尾的
 
 
@@ -936,22 +998,26 @@ async def get_chunk(client, doc, size, offset):
     key = (doc.id, offset)
     if (hit := cache_get(key)) is not None:
         return hit
-    if key in _fetching:
-        return await asyncio.shield(_fetching[key])
+    ent = _fetching.get(key)
+    if ent is None:
+        async def go():
+            buf = b""
+            async for c in client.iter_download(doc, offset=offset, request_size=CHUNK, limit=1, file_size=size):
+                buf += c
+            cache_put(key, buf)
+            return buf
 
-    async def go():
-        buf = b""
-        async for c in client.iter_download(doc, offset=offset, request_size=CHUNK, limit=1, file_size=size):
-            buf += c
-        cache_put(key, buf)
-        return buf
-
-    task = asyncio.ensure_future(go())
-    _fetching[key] = task
+        ent = _fetching[key] = {"task": asyncio.ensure_future(go()), "n": 0}
+        ent["task"].add_done_callback(lambda _: _fetching.pop(key) if _fetching.get(key) is ent else None)
+    # 大家都隔着 shield 等：拖进度条时旧请求被取消，不能连带把别人也在等的这一块掐掉。
+    # 等它的人全走了才真的取消，省下流量
+    ent["n"] += 1
     try:
-        return await task
+        return await asyncio.shield(ent["task"])
     finally:
-        _fetching.pop(key, None)
+        ent["n"] -= 1
+        if ent["n"] == 0 and not ent["task"].done():
+            ent["task"].cancel()
 
 
 async def warm_media(client, doc, size, head=4, tail=3):
@@ -1197,7 +1263,9 @@ class Job:
                 return
             try:  # 这次要存到别的文件夹：直接从已有的那份复制，不用再下一遍
                 path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(have, path)
+                # 放到线程里复制：几个 GB 的视频在这里同步复制，整个界面、播放和别的下载都会卡住
+                await asyncio.to_thread(shutil.copy2, have, path)
+                mark_from_internet(path)
                 self.skip += 1
                 self.dup += 1
                 note_file(fid, path)
@@ -1229,24 +1297,37 @@ class Job:
 
             tmp = path.with_name(path.name + ".part")
             ok = False
-            for attempt in range(1, 6):
-                try:
-                    if await download_file(self.client, msg, tmp, progress) is None:
-                        raise RuntimeError("没有拿到文件")
-                    os.replace(tmp, path)
-                    ok = True
-                    break
-                except errors.FileReferenceExpiredError:
-                    fresh = await self.client.get_messages(msg.peer_id, ids=msg.id)
-                    if fresh is None:
+            try:
+                for attempt in range(1, 6):
+                    try:
+                        if await download_file(self.client, msg, tmp, progress) is None:
+                            raise RuntimeError("没有拿到文件")
+                        os.replace(tmp, path)
+                        mark_from_internet(path)
+                        ok = True
                         break
-                    msg = fresh
-                except errors.FloodWaitError as e:
-                    self.say(tr("被限流，等 {sec} 秒", sec=e.seconds))
-                    await asyncio.sleep(e.seconds + 1)
-                except Exception as e:
-                    self.say(tr("{name} 第 {n} 次失败：{e}", name=path.name, n=attempt, e=repr(e)))
-                    await asyncio.sleep(3 * attempt)
+                    except errors.FileReferenceExpiredError:
+                        try:
+                            fresh = await self.client.get_messages(msg.peer_id, ids=msg.id)
+                        except Exception as e:  # 重新拿消息也失败：算这次失败，别让整个 worker 挂掉
+                            self.say(tr("{name} 第 {n} 次失败：{e}", name=path.name, n=attempt, e=repr(e)))
+                            await asyncio.sleep(3 * attempt)
+                            continue
+                        if fresh is None:
+                            break
+                        msg = fresh
+                    except errors.FloodWaitError as e:
+                        self.say(tr("被限流，等 {sec} 秒", sec=e.seconds))
+                        await asyncio.sleep(e.seconds + 1)
+                    except Exception as e:
+                        self.say(tr("{name} 第 {n} 次失败：{e}", name=path.name, n=attempt, e=repr(e)))
+                        await asyncio.sleep(3 * attempt)
+            finally:
+                if not ok:  # 失败或被停止：.part 是按完整大小预先占好的，留着会白占硬盘
+                    try:
+                        tmp.unlink(missing_ok=True)
+                    except OSError:
+                        pass
             self.active.pop(key, None)
             self.done += 1
             if ok:
