@@ -46,7 +46,9 @@ jobs:
       - name: Run 启动.bat
         shell: pwsh
         run: |
-          cmd /c ".\启动.bat --no-window < NUL"
+          # 跑一份打开了 echo 的副本（内容完全一样），出问题时日志里能看到执行到了哪一行
+          (Get-Content .\启动.bat) -replace '^@echo off', '@echo on' | Set-Content -Encoding ascii .\_ci_launch.bat
+          cmd /c ".\_ci_launch.bat --no-window < NUL"
           if ($LASTEXITCODE -ne 0) { throw "启动.bat exited with $LASTEXITCODE" }
           if (-not (Test-Path .venv\installed.lock)) { throw "requirements.lock was not installed" }
           # .venv 要用 PATH 上的那个 python（就是装 Python 时勾了 Add to PATH 的那个），不是随便挑最新的
