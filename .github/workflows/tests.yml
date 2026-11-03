@@ -1,0 +1,47 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python: ["3.10", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install locked dependencies (strict hash mode, same as 启动.bat)
+        run: python -m pip install --require-hashes -r requirements.lock
+      - run: python -m pip install pytest
+      - run: python -m pytest -q -rs
+
+  launcher:
+    # 真跑一遍 启动.bat：建 .venv、按锁定文件装依赖、把程序拉起来（--no-window 不开浏览器，没人连就自己退出）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run 启动.bat
+        shell: pwsh
+        run: |
+          cmd /c ".\启动.bat --no-window < NUL"
+          if ($LASTEXITCODE -ne 0) { throw "启动.bat exited with $LASTEXITCODE" }
+          if (-not (Test-Path .venv\installed.lock)) { throw "requirements.lock was not installed" }
+          .venv\Scripts\python.exe -c "import telethon, aiohttp, cryptg, qrcode, python_socks; print('venv ok, telethon', telethon.__version__)"
+      - name: Second run skips reinstall
+        shell: pwsh
+        run: |
+          $out = cmd /c ".\启动.bat --no-window < NUL" 2>&1 | Out-String
+          if ($out -match "Collecting|Installing") { throw "dependencies were reinstalled: $out" }
