@@ -74,7 +74,8 @@
 
 ## 安装
 
-1. 装 [Python 3.10+](https://www.python.org/downloads/)，安装时记得勾上 *Add Python to PATH*
+1. 装 [Python 3.10+](https://www.python.org/downloads/)，安装时记得勾上 *Add Python to PATH*。
+   **推荐 3.11–3.14**：刚发布的新版 Python（比如 3.15）暂时还没有加速包 cryptg 的现成安装包，程序照样能用，只是下载会慢很多
 2. 去 <https://my.telegram.org> → **API development tools** 建一个应用，记下 `api_id` 和 `api_hash`
 3. 把 `config.example.json` 复制一份改名成 `config.json`，填进去：
 

@@ -26,20 +26,33 @@ jobs:
       - run: python -m pytest -q -rs
 
   launcher:
-    # 真跑一遍 启动.bat：建 .venv、按锁定文件装依赖、把程序拉起来（--no-window 不开浏览器，没人连就自己退出）
+    # 真跑一遍 启动.bat：建 .venv、按锁定文件装依赖、把程序拉起来（--no-window 不开浏览器，没人连就自己退出）。
+    # 3.15：cryptg 还没有预编译包，要能跳过它照样启动（以前会现场编译，普通电脑上没有编译工具就整个装失败）
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.12"
+            cryptg: "yes"
+          - python: "3.15"
+            cryptg: "no"
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
+          allow-prereleases: true
       - name: Run 启动.bat
         shell: pwsh
         run: |
           cmd /c ".\启动.bat --no-window < NUL"
           if ($LASTEXITCODE -ne 0) { throw "启动.bat exited with $LASTEXITCODE" }
           if (-not (Test-Path .venv\installed.lock)) { throw "requirements.lock was not installed" }
-          .venv\Scripts\python.exe -c "import telethon, aiohttp, cryptg, qrcode, python_socks; print('venv ok, telethon', telethon.__version__)"
+          # .venv 要用 PATH 上的那个 python（就是装 Python 时勾了 Add to PATH 的那个），不是随便挑最新的
+          .venv\Scripts\python.exe -c "import sys, telethon, aiohttp, qrcode, python_socks; v = '%d.%d' % sys.version_info[:2]; assert v == '${{ matrix.python }}', v; print('venv python', v, 'telethon', telethon.__version__)"
+          $has = .venv\Scripts\python.exe -c "import importlib.util as u; print('yes' if u.find_spec('cryptg') else 'no')"
+          if ($has -ne "${{ matrix.cryptg }}") { throw "cryptg installed=$has, expected ${{ matrix.cryptg }}" }
       - name: Second run skips reinstall
         shell: pwsh
         run: |

@@ -89,6 +89,8 @@ A normal download fetches one chunk at a time, so most of the time is spent wait
 Leave `proxy` empty for auto-detection (direct connection, system proxy, and the usual Clash / v2rayN ports are all tried).
 You can also set it explicitly: `"socks5://127.0.0.1:7890"` or `"http://127.0.0.1:7890"`.
 
+**Python 3.11–3.14 is recommended**: a brand-new Python (e.g. 3.15) often has no prebuilt package of the `cryptg` speed-up yet. The app still works without it, but downloads are much slower.
+
 ## Running
 
 Double-click **启动.bat**. The first run creates a private `.venv` inside the app folder (your system Python is left alone)
