@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, urlparse
 
 import qrcode
 from telethon import TelegramClient, errors, events, functions, types, utils
+from telethon.sessions import StringSession
 from telethon.tl.types import MessageMediaWebPage
 
 ROOT = Path(__file__).resolve().parent
@@ -85,6 +86,13 @@ EN = {
     "找不到消息 {id}": "Message {id} not found",
     "消息是空的": "Message is empty",
     "发不出去：{e}": "Couldn't send: {e}",
+    "删不掉：{e}": "Couldn't delete: {e}",
+    "完整重扫": "Full rescan",
+    "上次扫到第 {id} 条，这次只扫之后的新消息": "Last scan reached message {id}; scanning only newer messages",
+    "这次要的比上次多，完整扫描一遍": "Asking for more than last time — doing a full scan",
+    "登录状态解不开（可能换了电脑或 Windows 账户），请重新扫码": "Can't decrypt the saved login (different PC or Windows account?) — please scan the QR code again",
+    "只能下到列表里的文件夹；新文件夹请点“选择其他文件夹…”":
+        "You can only download to a folder in the list — use “Choose another folder…” to add one",
     "这里不能发言": "You can't post here",
     "发送中…": "Sending…",
     "读不到消息：{e}": "Can't read messages: {e}",
@@ -97,16 +105,19 @@ EN = {
 }
 
 
-def tr(s, **kw):
-    """s 用中文原文当 key；英文模式下查表，查不到就按原文。"""
-    out = EN.get(s, s) if LANG == "en" else s
+def tr(text, /, **kw):
+    """text 用中文原文当 key；英文模式下查表，查不到就按原文。
+    text 只能按位置传：以前参数叫 s，tr("…{s}…", s=x) 会报 TypeError（代理类型写错时的提示就是这样丢的）。"""
+    out = EN.get(text, text) if LANG == "en" else text
     return out.format(**kw) if kw else out
 
 
 # ---------------- 工具函数 ----------------
 
 def safe(name, maxlen=150):
-    name = re.sub(r'[\\/:*?"<>|\r\n\t]', "_", name).strip(" .")
+    # 控制字符 Windows 文件名里不让用；方向控制符（U+202E 之类）能把 “x‮gpj.exe” 显示成 “xexe.jpg”，伪装扩展名
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f\x7f]', "_", name)
+    name = re.sub(r"[‎‏‪-‮⁦-⁩]", "", name).strip(" .")
     if len(name) > maxlen:
         stem, ext = os.path.splitext(name)
         name = stem[: maxlen - len(ext)] + ext
@@ -191,12 +202,18 @@ def load_config():
 
 
 def recent_dirs():
-    """用过的下载文件夹，最近的在前。第一个就是默认值。"""
+    """用过的下载文件夹，最近的在前。第一个就是默认值。默认的 downloads 文件夹始终在列表里。"""
     cfg = load_config()
-    dirs = [d for d in (cfg.get("recent_dirs") or []) if d]
+    dirs = [d for d in (cfg.get("recent_dirs") or []) if d][:8]
     if str(DEFAULT_OUT) not in dirs:
-        dirs.append(str(DEFAULT_OUT))
-    return dirs[:8]
+        dirs = dirs[:7] + [str(DEFAULT_OUT)]  # 原来是先追加再截断，用满 8 个以后默认文件夹会被挤掉
+    return dirs
+
+
+def is_known_dir(path):
+    """是不是列表里已有的下载文件夹（不含子文件夹）。新文件夹只能经系统的选择框加进来。"""
+    p = Path(path).expanduser().resolve()
+    return any(p == Path(d).resolve() for d in recent_dirs())
 
 
 def remember_dir(path):
@@ -213,11 +230,35 @@ def allowed_dir(path):
     """只允许读写下载过的文件夹，防止别的网页借接口乱翻硬盘。"""
     p = Path(path).expanduser().resolve()
     roots = [Path(d).resolve() for d in recent_dirs()]
-    return any(p == r or r in p.parents for r in roots)
+    if any(p == r or r in p.parents for r in roots):
+        return True
+    # 文件夹被挤出“最近 8 个”以后，以前下到那里的文件也要还能打开：认得出是自己下的就放行
+    target = os.path.normcase(str(p))
+    inside = target.rstrip("\\/") + os.sep
+    for v in DOWNLOADED.values():
+        n = os.path.normcase(os.path.abspath(v))
+        if n == target or n.startswith(inside):
+            return True
+    return False
+
+
+def write_atomic(path, data):
+    """先写临时文件再换过去：写到一半被强关，旧文件还是完整的（不会把下载记录/配置写坏）。"""
+    tmp = path.with_name(path.name + ".tmp")
+    if isinstance(data, bytes):
+        tmp.write_bytes(data)
+    else:
+        tmp.write_text(data, "utf-8")
+    os.replace(tmp, path)
 
 
 def save_config(cfg):
-    CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), "utf-8")
+    write_atomic(CONFIG, json.dumps(cfg, ensure_ascii=False, indent=2))
+
+
+def hide_secret(proxy):
+    """日志里不写代理的用户名密码（socks5://user:pass@host:port）。"""
+    return re.sub(r"(^|//)[^@/]+@", r"\1***@", proxy) if proxy else proxy
 
 
 def port_open(port):
@@ -247,6 +288,110 @@ def proxy_candidates(cfg):
     return list(dict.fromkeys(c for c in cands if c is not None))
 
 
+# ---------------- 登录状态加密存盘（Windows DPAPI） ----------------
+# data/tg.session 原来是明文 SQLite，谁拿到这个文件谁就登上了你的账号（同步盘、备份、U 盘拷走都算）。
+# 现在用 Windows 自带的 DPAPI 加密：密钥跟着你的 Windows 账户走，文件拷到别的电脑/别的账户上解不开。
+# 防不了的：在你这个 Windows 账户下运行的木马 —— 它能以你的身份直接解密。
+SESSION_ENC = DATA / "tg.session.dpapi"
+_ENTROPY = b"tg-downloader session v1"  # 附加熵：别的程序就算以你的身份调 DPAPI，不知道这串也解不开
+
+
+def _dpapi(data, encrypt):
+    """调 Windows 的 CryptProtectData / CryptUnprotectData（只认当前 Windows 用户）。失败抛 OSError。"""
+    import ctypes
+    from ctypes import wintypes
+
+    class Blob(ctypes.Structure):
+        _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+    def blob(b):
+        buf = ctypes.create_string_buffer(b, len(b))
+        return Blob(len(b), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char))), buf  # buf 要活到调用结束
+
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    fn = crypt32.CryptProtectData if encrypt else crypt32.CryptUnprotectData
+    fn.argtypes = [ctypes.POINTER(Blob), ctypes.c_void_p, ctypes.POINTER(Blob), ctypes.c_void_p,
+                   ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(Blob)]
+    fn.restype = wintypes.BOOL
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    (src, keep1), (ent, keep2), out = blob(data), blob(_ENTROPY), Blob()
+    if not fn(ctypes.byref(src), None, ctypes.byref(ent), None, None, 0x1, ctypes.byref(out)):  # 0x1: 不弹任何界面
+        raise ctypes.WinError(ctypes.get_last_error())
+    del keep1, keep2  # 缓冲区得活过上面那次调用
+    try:
+        return ctypes.string_at(out.pbData, out.cbData)
+    finally:
+        kernel32.LocalFree(ctypes.cast(out.pbData, ctypes.c_void_p))
+
+
+CRYPT = _dpapi if os.name == "nt" else None  # 别的系统没有 DPAPI，照旧明文（测试里会换成假的）
+
+
+class LockedSession(StringSession):
+    """登录状态加密存盘。只存连得上需要的（数据中心 + 授权密钥）；聊天/用户缓存放内存，
+    启动后列一遍聊天就都有了（resolve() 找不到时也会自己刷新）。
+    Telethon 大约每分钟调一次 save()，内容没变就不写盘。"""
+
+    def __init__(self, path, string=None):
+        super().__init__(string)
+        self._path = path
+        self._saved = string or ""
+
+    def save(self):
+        s = super().save()
+        if s and s != self._saved:
+            try:
+                write_atomic(self._path, CRYPT(s.encode(), True))
+                self._saved = s
+            except Exception as e:  # 存不下来也别让连接失败：这次照样能用，只是下次要重新扫码
+                log.warning("登录状态存不下来: %r", e)
+        return s
+
+
+def open_session():
+    """给 TelegramClient 用的 session。Windows 上加密；老版本留下的明文 tg.session 会转成加密的再删掉。
+    加密用不了（不是 Windows / 出了意外）就照旧用明文，至少保证能登录。"""
+    if CRYPT is None:
+        return str(SESSION)
+    try:
+        return _open_locked()
+    except Exception as e:
+        log.warning("登录状态加密用不了，改用明文保存: %r", e)
+        return str(SESSION)
+
+
+def _open_locked():
+    plain = SESSION.with_name(SESSION.name + ".session")  # data/tg.session
+    if CRYPT(CRYPT(b"probe", True), False) != b"probe":  # DPAPI 整个不能用时先发现，别动任何文件
+        raise OSError("DPAPI 不可用")
+    if SESSION_ENC.exists():
+        try:
+            return LockedSession(SESSION_ENC, CRYPT(SESSION_ENC.read_bytes(), False).decode())
+        except (OSError, ValueError) as e:  # 换了电脑 / 换了 Windows 账户 / 文件坏了：只能重新扫码
+            log.warning("%s: %r", tr("登录状态解不开（可能换了电脑或 Windows 账户），请重新扫码"), e)
+            os.replace(SESSION_ENC, SESSION_ENC.with_name(SESSION_ENC.name + ".bad"))  # 留着，不删
+            return LockedSession(SESSION_ENC)
+    if plain.exists():
+        from telethon.sessions import SQLiteSession
+        old = SQLiteSession(str(SESSION))
+        try:
+            s = StringSession.save(old)
+        finally:
+            old.close()
+        if s:
+            blob = CRYPT(s.encode(), True)
+            if CRYPT(blob, False).decode() != s:  # 先确认解得回来，再删明文
+                raise OSError("加密后解不回原样")
+            write_atomic(SESSION_ENC, blob)
+        for f in (plain, plain.with_name(plain.name + "-journal")):
+            f.unlink(missing_ok=True)
+        log.info("登录状态已改成加密保存（%s）", SESSION_ENC.name)
+        return LockedSession(SESSION_ENC, s or None)
+    return LockedSession(SESSION_ENC)
+
+
 async def connect(cfg):
     api_id, api_hash = cfg.get("api_id"), cfg.get("api_hash")
     if not api_id or not api_hash:
@@ -255,9 +400,9 @@ async def connect(cfg):
         raise ValueError(tr(NEED_API))
     DATA.mkdir(exist_ok=True)
     for proxy in proxy_candidates(cfg):
-        log.info("连接 Telegram（%s）", proxy or "直连")
+        log.info("连接 Telegram（%s）", hide_secret(proxy) or "直连")
         client = TelegramClient(
-            str(SESSION), api_id, api_hash, proxy=parse_proxy(proxy),
+            open_session(), api_id, api_hash, proxy=parse_proxy(proxy),
             flood_sleep_threshold=900, connection_retries=5, retry_delay=2, request_retries=10, timeout=30,
         )
         try:
@@ -457,9 +602,33 @@ def note_file(fid, path):
 
 def save_index():
     try:
-        INDEX_FILE.write_text(json.dumps(DOWNLOADED, ensure_ascii=False), "utf-8")
+        write_atomic(INDEX_FILE, json.dumps(DOWNLOADED, ensure_ascii=False))
     except OSError as e:
         log.warning("下载记录存不下来: %r", e)
+
+
+# Windows 上能直接运行代码的文件类型。电脑上肯定装了 Python（这个程序就靠它跑），所以 .py 也算
+RISKY_EXT = {
+    ".exe", ".com", ".scr", ".pif", ".bat", ".cmd", ".msi", ".msp", ".msix", ".msixbundle", ".appx",
+    ".appxbundle", ".appinstaller", ".application", ".appref-ms", ".gadget", ".cpl", ".msc", ".hta",
+    ".jar", ".js", ".jse", ".vb", ".vbs", ".vbe", ".wsf", ".wsh", ".ws", ".wsc", ".ps1", ".psm1",
+    ".psd1", ".ps1xml", ".psc1", ".reg", ".inf", ".lnk", ".url", ".website", ".scf", ".chm", ".dll",
+    ".sys", ".iso", ".img", ".vhd", ".vhdx", ".library-ms", ".settingcontent-ms", ".theme",
+    ".themepack", ".diagcab", ".xll", ".xlam", ".docm", ".dotm", ".xlsm", ".xltm", ".pptm", ".potm",
+    ".ppam", ".sldm", ".py", ".pyw", ".pyz", ".pyzw", ".pyc", ".pyo",
+}
+
+
+def mark_from_internet(path):
+    """给下载的文件打上“来自网络”标记（Mark of the Web），和浏览器下载的一样：
+    运行 exe 会有 SmartScreen 提示，Office 文档里的宏默认被拦。只在 Windows 的 NTFS 上有效，失败就算了。"""
+    if os.name != "nt":
+        return
+    try:
+        with open(f"{path}:Zone.Identifier", "wb") as f:
+            f.write(b"[ZoneTransfer]\r\nZoneId=3\r\n")
+    except OSError:
+        pass
 
 
 def forward_name(m):
@@ -738,14 +907,12 @@ async def join_invite(client, invite):
     return {"chat": chat_info(chat)} if chat else {"error": tr("已加入，刷新一下左边列表就能看到")}
 
 
-async def send(client, chat, text=None, reply_to=None, comment_to=None, file=None, name=None):
-    """发消息。comment_to 不为空 = 发到某条帖子的评论区。"""
+async def send(client, chat, text=None, reply_to=None, comment_to=None, file=None):
+    """发消息。comment_to 不为空 = 发到某条帖子的评论区。file = 本地文件路径（文件名就是发出去的名字）。"""
     entity = await resolve(client, chat)
     kw = dict(reply_to=reply_to or None, comment_to=comment_to or None)
     if file is not None:
-        f = io.BytesIO(file)
-        f.name = name or "file"
-        msg = await client.send_file(entity, f, caption=(text or None), force_document=False, **kw)
+        msg = await client.send_file(entity, str(file), caption=(text or None), force_document=False, **kw)
     else:
         if not (text or "").strip():
             raise ValueError(tr("消息是空的"))
@@ -783,13 +950,38 @@ async def messages_for_link(client, entity, msg_id):
 
 # ---------------- 下载任务 ----------------
 
+def read_state(out):
+    """每个聊天文件夹里的 .state.json：文字记录写到哪条、上次扫描到哪条。坏了就当没有。"""
+    try:
+        return json.loads((out / ".state.json").read_text("utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def update_state(out, **kv):
+    """读出来改几项再写回去（文字记录和扫描进度各管各的，谁也别覆盖谁）。"""
+    st = read_state(out)
+    st.update(kv)
+    write_atomic(out / ".state.json", json.dumps(st))
+
+
+def scan_covers(prev, cur):
+    """上次扫描的选项是不是把这次的都包含了。包含才能只扫新消息，否则老消息里这次想要的东西上次没下。"""
+    if not prev:
+        return False
+    return (set(cur["kinds"]) <= set(prev["kinds"])
+            and (prev["max"] is None or (cur["max"] is not None and cur["max"] <= prev["max"]))
+            and (prev["posts"] or not cur["posts"])
+            and (prev["comments"] or not cur["comments"])
+            and (prev["text"] or not cur["text"]))
+
+
 class TextLog:
     """追加写 聊天记录.txt + messages.jsonl，记住写到哪条，续跑不重复。"""
 
     def __init__(self, out, chat_title):
-        self.state_path = out / ".state.json"
-        self.state = json.loads(self.state_path.read_text("utf-8")) if self.state_path.exists() else {}
-        self.last = self.state.get("text_last_id", 0)
+        self.out = out
+        self.last = read_state(out).get("text_last_id", 0)
         self.chat_title = chat_title
         self.txt = open(out / "聊天记录.txt", "a", encoding="utf-8")
         self.jsonl = open(out / "messages.jsonl", "a", encoding="utf-8")
@@ -809,8 +1001,7 @@ class TextLog:
     def close(self):
         self.txt.close()
         self.jsonl.close()
-        self.state["text_last_id"] = self.last
-        self.state_path.write_text(json.dumps(self.state), "utf-8")
+        update_state(self.out, text_last_id=self.last)
 
 
 FILES = {}  # "chat:msg" -> {"s": queued/loading/done/fail, "got", "size", "rel"}，给界面显示每个文件的状态
@@ -890,7 +1081,15 @@ async def download_file(client, msg, path, on_progress):
                     got += len(chunk)
                     on_progress(got, size)
 
-            await asyncio.gather(*(lane(i) for i in range(lanes)))
+            # 一路出错时 gather 不会停掉别的路：它们会接着往已经关掉的文件里写、还占着线路。
+            # 所以不管成功、失败还是被停止，出来之前都把各路收干净
+            tasks = [asyncio.create_task(lane(i)) for i in range(lanes)]
+            try:
+                await asyncio.gather(*tasks)
+            finally:
+                for t in tasks:
+                    t.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
         if got != size:
             raise RuntimeError(f"只拿到 {got}/{size} 字节")
         return str(path)
@@ -901,7 +1100,7 @@ async def download_file(client, msg, path, on_progress):
 CACHE_MAX = 96 * 1024 * 1024
 _cache = OrderedDict()   # (文件id, 偏移) -> bytes
 _cache_bytes = 0
-_fetching = {}           # 正在取的块，避免同一块同时取两遍
+_fetching = {}           # 正在取的块，避免同一块同时取两遍：key -> {"task", "n": 几个人在等}
 _tail_done = set()       # 已经预取过文件尾的
 
 
@@ -936,22 +1135,26 @@ async def get_chunk(client, doc, size, offset):
     key = (doc.id, offset)
     if (hit := cache_get(key)) is not None:
         return hit
-    if key in _fetching:
-        return await asyncio.shield(_fetching[key])
+    ent = _fetching.get(key)
+    if ent is None:
+        async def go():
+            buf = b""
+            async for c in client.iter_download(doc, offset=offset, request_size=CHUNK, limit=1, file_size=size):
+                buf += c
+            cache_put(key, buf)
+            return buf
 
-    async def go():
-        buf = b""
-        async for c in client.iter_download(doc, offset=offset, request_size=CHUNK, limit=1, file_size=size):
-            buf += c
-        cache_put(key, buf)
-        return buf
-
-    task = asyncio.ensure_future(go())
-    _fetching[key] = task
+        ent = _fetching[key] = {"task": asyncio.ensure_future(go()), "n": 0}
+        ent["task"].add_done_callback(lambda _: _fetching.pop(key) if _fetching.get(key) is ent else None)
+    # 大家都隔着 shield 等：拖进度条时旧请求被取消，不能连带把别人也在等的这一块掐掉。
+    # 等它的人全走了才真的取消，省下流量
+    ent["n"] += 1
     try:
-        return await task
+        return await asyncio.shield(ent["task"])
     finally:
-        _fetching.pop(key, None)
+        ent["n"] -= 1
+        if ent["n"] == 0 and not ent["task"].done():
+            ent["task"].cancel()
 
 
 async def warm_media(client, doc, size, head=4, tail=3):
@@ -1034,6 +1237,8 @@ class Job:
         self.max_bytes = float(mb) * 1024 * 1024 if mb else None
         self.scope = opts.get("scope") or "both"
         self.text = opts.get("text", True)
+        self.incremental = opts.get("incremental", True)  # 下载全部：只扫上次之后的新消息
+        self.fail_anchor = None  # 这次失败的文件里，最早的那条帖子号：下次增量从它开始重扫
         self.scan = self.total = self.done = self.ok = self.bytes = self.skip = self.dup = 0
         self.comment_posts = self.comments = 0
         self.root = Path(opts.get("out_dir") or DEFAULT_OUT)  # 这一次下到哪个文件夹
@@ -1046,6 +1251,10 @@ class Job:
     def say(self, s):
         self.logs.append(f"{datetime.now():%H:%M:%S}  {s}")
         log.info("[%s] %s", self.title, s)
+
+    def failed_at(self, post_id):
+        if post_id:
+            self.fail_anchor = post_id if self.fail_anchor is None else min(self.fail_anchor, post_id)
 
     def snapshot(self):
         return {
@@ -1108,6 +1317,7 @@ class Job:
 
         self.queue = asyncio.Queue(maxsize=JOBS * 4)
         workers = [asyncio.create_task(self.worker()) for _ in range(JOBS)]
+        finished_scan = None  # 下载全部扫完以后要记下的进度，等文件都下完了才写
         try:
             if self.picked:
                 seen = set()
@@ -1129,17 +1339,33 @@ class Job:
                     post = next((m for m in msgs if m.replies and m.replies.comments), msgs[0])
                     await self.download_comments(entity, post)
             else:
+                # 增量：上次扫完记下了扫到哪条、用的什么选项。这次的选项被上次包含，就只扫之后的新消息，
+                # 大频道不用每次从第一条翻起（几万条要上千次请求，还容易被限流）。
+                # 代价：老帖子下面新增的评论扫不到 —— 要补就选“完整重扫”。
+                want = {"kinds": sorted(self.kinds), "max": self.max_bytes, "posts": want_posts,
+                        "comments": want_comments, "text": bool(self.text and want_posts)}
+                prev = read_state(self.out).get("scan")
+                min_id = 0
+                if not self.incremental:
+                    self.say(tr("完整重扫"))
+                elif scan_covers(prev, want):
+                    min_id = prev["last"]
+                    self.say(tr("上次扫到第 {id} 条，这次只扫之后的新消息", id=min_id))
+                elif prev:
+                    self.say(tr("这次要的比上次多，完整扫描一遍"))
+                top = min_id
                 textlog = TextLog(self.out, self.title) if self.text and want_posts else None
                 seen = set()
                 try:
-                    async for msg in self.client.iter_messages(entity, reverse=True):
+                    async for msg in self.client.iter_messages(entity, reverse=True, min_id=min_id):
                         self.scan += 1
+                        top = max(top, msg.id)
                         kind = kind_of(msg)
                         if want_posts:
                             if textlog:
                                 textlog.add(msg, kind, file_name(msg, kind) if kind else None)
                             if kind:
-                                await self.enqueue(msg, kind, save_path(self.out, msg, kind))
+                                await self.enqueue(msg, kind, save_path(self.out, msg, kind), anchor=msg.id)
                         if want_comments and msg.replies and msg.replies.comments and msg.replies.replies:
                             key = msg.grouped_id or msg.id  # 相册只取一次评论
                             if key not in seen:
@@ -1148,9 +1374,14 @@ class Job:
                 finally:
                     if textlog:
                         textlog.close()
+                finished_scan = (want, min_id, top)
             for _ in workers:
                 await self.queue.put(None)
             await asyncio.gather(*workers)
+            if finished_scan:  # 全部下完才记进度；有失败的就退回到最早失败的那条帖子之前，下次重扫它
+                want, min_id, top = finished_scan
+                last = top if self.fail_anchor is None else max(min_id, self.fail_anchor - 1)
+                update_state(self.out, scan={**want, "last": last})
         finally:
             for w in workers:
                 w.cancel()
@@ -1164,9 +1395,10 @@ class Job:
                 kind = kind_of(c)
                 lines.append(fmt_line(c, kind, file_name(c, kind) if kind else None, "匿名"))
                 if kind:
-                    await self.enqueue(c, kind, save_path(self.out, c, kind, post.id))
+                    await self.enqueue(c, kind, save_path(self.out, c, kind, post.id), anchor=post.id)
         except errors.RPCError as e:
             self.say(tr("帖子 {id} 的评论读不到：{e}", id=post.id, e=e))
+            self.failed_at(post.id)
             return
         self.comment_posts += 1
         if self.text and lines:
@@ -1176,7 +1408,8 @@ class Job:
                     f"{(post.message or '').strip()[:500]}\n{'-' * 40}\n")
             (folder / "评论.txt").write_text(head + "".join(lines), "utf-8")
 
-    async def enqueue(self, msg, kind, path, force=False):
+    async def enqueue(self, msg, kind, path, force=False, anchor=None):
+        """anchor = 这个文件属于哪条帖子（评论里的文件就是那条帖子），下载失败时用来决定下次从哪重扫。"""
         if not force:
             if kind not in self.kinds:
                 return
@@ -1197,7 +1430,9 @@ class Job:
                 return
             try:  # 这次要存到别的文件夹：直接从已有的那份复制，不用再下一遍
                 path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(have, path)
+                # 放到线程里复制：几个 GB 的视频在这里同步复制，整个界面、播放和别的下载都会卡住
+                await asyncio.to_thread(shutil.copy2, have, path)
+                mark_from_internet(path)
                 self.skip += 1
                 self.dup += 1
                 note_file(fid, path)
@@ -1212,11 +1447,11 @@ class Job:
         self.total += 1
         self.keys.add(key)
         FILES[key] = {"s": "queued", "got": 0, "size": (msg.file.size if msg.file else 0) or 0, "path": str(path)}
-        await self.queue.put((msg, path))
+        await self.queue.put((msg, path, anchor))
 
     async def worker(self):
         while (item := await self.queue.get()) is not None:
-            msg, path = item
+            msg, path, anchor = item
             key = msg_key(msg)
             state = FILES[key]
             state["s"] = "loading"
@@ -1229,24 +1464,37 @@ class Job:
 
             tmp = path.with_name(path.name + ".part")
             ok = False
-            for attempt in range(1, 6):
-                try:
-                    if await download_file(self.client, msg, tmp, progress) is None:
-                        raise RuntimeError("没有拿到文件")
-                    os.replace(tmp, path)
-                    ok = True
-                    break
-                except errors.FileReferenceExpiredError:
-                    fresh = await self.client.get_messages(msg.peer_id, ids=msg.id)
-                    if fresh is None:
+            try:
+                for attempt in range(1, 6):
+                    try:
+                        if await download_file(self.client, msg, tmp, progress) is None:
+                            raise RuntimeError("没有拿到文件")
+                        os.replace(tmp, path)
+                        mark_from_internet(path)
+                        ok = True
                         break
-                    msg = fresh
-                except errors.FloodWaitError as e:
-                    self.say(tr("被限流，等 {sec} 秒", sec=e.seconds))
-                    await asyncio.sleep(e.seconds + 1)
-                except Exception as e:
-                    self.say(tr("{name} 第 {n} 次失败：{e}", name=path.name, n=attempt, e=repr(e)))
-                    await asyncio.sleep(3 * attempt)
+                    except errors.FileReferenceExpiredError:
+                        try:
+                            fresh = await self.client.get_messages(msg.peer_id, ids=msg.id)
+                        except Exception as e:  # 重新拿消息也失败：算这次失败，别让整个 worker 挂掉
+                            self.say(tr("{name} 第 {n} 次失败：{e}", name=path.name, n=attempt, e=repr(e)))
+                            await asyncio.sleep(3 * attempt)
+                            continue
+                        if fresh is None:
+                            break
+                        msg = fresh
+                    except errors.FloodWaitError as e:
+                        self.say(tr("被限流，等 {sec} 秒", sec=e.seconds))
+                        await asyncio.sleep(e.seconds + 1)
+                    except Exception as e:
+                        self.say(tr("{name} 第 {n} 次失败：{e}", name=path.name, n=attempt, e=repr(e)))
+                        await asyncio.sleep(3 * attempt)
+            finally:
+                if not ok:  # 失败或被停止：.part 是按完整大小预先占好的，留着会白占硬盘
+                    try:
+                        tmp.unlink(missing_ok=True)
+                    except OSError:
+                        pass
             self.active.pop(key, None)
             self.done += 1
             if ok:
@@ -1259,4 +1507,5 @@ class Job:
             else:
                 CLAIMED.pop(file_id(msg), None)
                 self.fail.append(str(path.relative_to(self.out)))
+                self.failed_at(anchor)
                 state["s"] = "fail"

@@ -1,0 +1,70 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python: ["3.10", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install locked dependencies (strict hash mode, same as 启动.bat)
+        run: python -m pip install --require-hashes -r requirements.lock
+      - run: python -m pip install pytest
+      - run: python -m pytest -q -rs
+
+  launcher:
+    # 真跑一遍 启动.bat：建 .venv、按锁定文件装依赖、把程序拉起来（--no-window 不开浏览器，没人连就自己退出）。
+    # 3.15：cryptg 还没有预编译包，要能跳过它照样启动（以前会现场编译，普通电脑上没有编译工具就整个装失败）
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.12"
+            cryptg: "yes"
+          - python: "3.15"
+            cryptg: "no"
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+          allow-prereleases: true
+      - name: Run 启动.bat
+        shell: pwsh
+        run: |
+          # 跑一份打开了 echo 的副本（内容完全一样），出问题时日志里能看到执行到了哪一行
+          (Get-Content .\启动.bat) -replace '^@echo off', '@echo on' | Set-Content -Encoding ascii .\_ci_launch.bat
+          $out = cmd /c ".\_ci_launch.bat --no-window < NUL" 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          Write-Output $out
+          if ($code -ne 0) { throw "启动.bat exited with $code" }
+          # 重定向写错（比如写成 /dev/null）时 cmd 只报这一句、跳过那条命令，退出码却还是 0 —— 真出过
+          if ($out -match "cannot find the path|is not recognized") { throw "a command in 启动.bat failed to run" }
+          if (-not (Test-Path .venv\installed.lock)) { throw "requirements.lock was not installed" }
+          # .venv 要用 PATH 上的那个 python（就是装 Python 时勾了 Add to PATH 的那个），不是随便挑最新的
+          .venv\Scripts\python.exe -c "import sys, telethon, aiohttp, qrcode, python_socks; v = '%d.%d' % sys.version_info[:2]; assert v == '${{ matrix.python }}', v; print('venv python', v, 'telethon', telethon.__version__)"
+          $has = .venv\Scripts\python.exe -c "import importlib.util as u; print('yes' if u.find_spec('cryptg') else 'no')"
+          if ($has -ne "${{ matrix.cryptg }}") { throw "cryptg installed=$has, expected ${{ matrix.cryptg }}" }
+      - name: Second run skips reinstall
+        shell: pwsh
+        run: |
+          $before = (Get-Item .venv\installed.lock).LastWriteTimeUtc
+          $out = cmd /c ".\_ci_launch.bat --no-window < NUL" 2>&1 | Out-String
+          Write-Output $out
+          # 看 pip 自己的输出（echo on 时 cmd 会把整个 if 块原样打出来，哪怕没执行，所以不能搜命令本身）
+          if ($out -match "Requirement already satisfied|Collecting|Successfully installed") { throw "pip ran again although requirements.lock did not change" }
+          if ((Get-Item .venv\installed.lock).LastWriteTimeUtc -ne $before) { throw "installed.lock was rewritten" }

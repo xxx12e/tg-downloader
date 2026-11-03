@@ -58,9 +58,9 @@
   #app { display: flex; height: 100vh; }
   #side { width: 380px; flex: none; border-right: 1px solid var(--line); display: flex; flex-direction: column; background: var(--card); }
   .side-top { display: flex; align-items: center; gap: 8px; padding: 8px 12px; }
-  .search { flex: 1; display: flex; align-items: center; background: var(--hover); border-radius: 22px; padding: 0 14px; height: 42px; border: 2px solid transparent; }
+  .search { flex: 1; min-width: 0; display: flex; align-items: center; background: var(--hover); border-radius: 22px; padding: 0 14px; height: 42px; border: 2px solid transparent; }
   .search:focus-within { border-color: var(--blue); background: var(--card); }
-  .search input { border: none; background: none; flex: 1; }
+  .search input { border: none; background: none; flex: 1; min-width: 0; width: 100%; }  /* 不然输入框按默认宽度撑开，把右边的 ⬇ 挤出侧栏 */
   .folders { display: flex; gap: 2px; padding: 0 10px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
   .folders button { padding: 10px 10px; color: var(--sub); font-weight: 600; font-size: 14px; border-bottom: 3px solid transparent; white-space: nowrap; }
   .folders button.on { color: var(--blue); border-bottom-color: var(--blue); }
@@ -90,6 +90,8 @@
   .head .t2 { font-size: 13px; color: var(--sub); }
   .head .act { display: flex; gap: 4px; align-items: center; }
   .head .act .btn { font-size: 14px; }
+  /* “到最新”按钮相对消息区定位：以前相对整个聊天栏，正好盖在右下角的发送按钮上 */
+  .scrollwrap { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
   #scroller { flex: 1; overflow-y: auto; padding: 8px 0 12px; }
   #msgs { max-width: 760px; margin: 0 auto; padding: 0 16px; }
   .day { text-align: center; margin: 10px 0; position: sticky; top: 6px; z-index: 2; }
@@ -311,7 +313,7 @@
     <div id="l-password" class="hidden">
       <h2 data-t="两步验证">两步验证</h2>
       <p id="pw-hint" style="color:var(--sub)"></p>
-      <form onsubmit="sendPassword(event)" style="display:flex;gap:8px;margin-top:14px">
+      <form id="pwForm" style="display:flex;gap:8px;margin-top:14px">
         <input type="password" id="pw" style="flex:1;padding:8px 12px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--text)" data-t-ph="密码" placeholder="密码">
         <button class="btn fill" data-t="确定">确定</button>
       </form>
@@ -319,7 +321,7 @@
     <div id="l-error" class="hidden">
       <h2 data-t="出问题了">出问题了</h2>
       <p class="err" id="err"></p>
-      <button class="btn fill" onclick="api('/api/retry','POST')" data-t="重试">重试</button>
+      <button class="btn fill" data-do="retry" data-t="重试">重试</button>
     </div>
   </div>
 </div>
@@ -328,11 +330,11 @@
 <div id="app" class="hidden">
   <aside id="side">
     <div class="side-top">
-      <button class="icon" data-t-title="打开下载文件夹" title="打开下载文件夹" onclick="openPath('')">📁</button>
-      <button class="icon" id="themeBtn" onclick="setTheme(THEME === 'dark' ? 'light' : 'dark')" title="夜间模式 / Dark mode">🌙</button>
-      <button class="icon" id="langBtn" onclick="setLang(LANG === 'zh' ? 'en' : 'zh')" title="中文 / English">EN</button>
-      <div class="search"><input id="q" data-t-ph="搜索" placeholder="搜索" oninput="renderChats()"></div>
-      <button class="icon" data-t-title="下载管理" title="下载管理" onclick="openDrawer()">⬇<span class="badge hidden" id="dlcount"></span></button>
+      <button class="icon" data-t-title="打开下载文件夹" title="打开下载文件夹" data-do="openDownloads">📁</button>
+      <button class="icon" id="themeBtn" data-do="toggleTheme" title="夜间模式 / Dark mode">🌙</button>
+      <button class="icon" id="langBtn" data-do="toggleLang" title="中文 / English">EN</button>
+      <div class="search"><input id="q" data-t-ph="搜索" placeholder="搜索"></div>
+      <button class="icon" data-t-title="下载管理" title="下载管理" data-do="openDrawer">⬇<span class="badge hidden" id="dlcount"></span></button>
     </div>
     <div class="folders" id="folders"></div>
     <div id="chatlist"><div class="spinner"></div></div>
@@ -345,42 +347,42 @@
 
 <div id="menu" class="hidden"></div>
 <div id="drawerWrap" class="hidden">
-  <div class="mask" onclick="closeDrawer()"></div>
+  <div class="mask" data-do="closeDrawer"></div>
   <div id="drawer">
     <div class="dh">
       <h3 data-t="下载管理">下载管理</h3>
-      <button class="btn" onclick="api('/api/clear','POST').then(pollJobs)" data-t="清除已结束">清除已结束</button>
-      <button class="btn red" onclick="api('/api/cancel','POST',{})" data-t="全部停止">全部停止</button>
-      <button class="icon" onclick="closeDrawer()">✕</button>
+      <button class="btn" data-do="clearJobs" data-t="清除已结束">清除已结束</button>
+      <button class="btn red" data-do="stopAll" data-t="全部停止">全部停止</button>
+      <button class="icon" data-do="closeDrawer">✕</button>
     </div>
     <div id="jobs"></div>
   </div>
 </div>
-<div id="modal" class="hidden"><div class="mask" onclick="closeModal()"></div><div class="box" id="modalBox"></div></div>
+<div id="modal" class="hidden"><div class="mask" data-do="closeModal"></div><div class="box" id="modalBox"></div></div>
 <div id="viewer" class="hidden">
   <div class="vt">
     <span id="vname" class="grow"></span>
     <button class="btn" id="vdl" data-t="⬇ 下载">⬇ 下载</button>
     <button class="btn" id="vopen" data-t="打开">打开</button>
     <button class="btn" id="vreveal" data-t="在文件夹中显示">在文件夹中显示</button>
-    <button class="btn" onclick="closeViewer()" data-t="✕ 关闭">✕ 关闭</button>
+    <button class="btn" data-do="closeViewer" data-t="✕ 关闭">✕ 关闭</button>
   </div>
   <div class="vb">
-    <button class="nav" style="left:0" onclick="viewStep(-1)">‹</button>
+    <button class="nav" style="left:0" data-do="viewPrev">‹</button>
     <div class="spinner" id="vspin"></div>
     <div id="vstage"></div>
-    <button class="nav" style="right:0" onclick="viewStep(1)">›</button>
+    <button class="nav" style="right:0" data-do="viewNext">›</button>
   </div>
   <div class="cap" id="vcap"></div>
 </div>
 <div id="player" class="hidden">
   <div class="pinfo"><b id="pname"></b><span id="psub"></span></div>
   <audio id="paudio" controls></audio>
-  <button class="icon" onclick="stopAudio()" data-t-title="关闭" title="关闭">✕</button>
+  <button class="icon" data-do="stopAudio" data-t-title="关闭" title="关闭">✕</button>
 </div>
 <div id="toast" class="hidden"></div>
 
-<script>
+<script nonce="{{NONCE}}">
 /* ================= 中英切换 ================= */
 const I18N = {
   // 登录
@@ -415,6 +417,7 @@ const I18N = {
   // 右键菜单
   "预览": "Preview", "播放": "Play", "用电脑上的程序打开": "Open with default app", "在文件夹中显示": "Show in folder",
   "下载这个文件": "Download this file", "选中 / 取消选中": "Select / deselect", "复制文字": "Copy text", "已复制": "Copied",
+  "删除这条消息？": "Delete this message?", "所有人那边都会删掉，删了不能恢复。": "It will be deleted for everyone. This can't be undone.",
   // 选择模式
   "已选": "Selected ", "条": "", "个文件": " files", "全选已加载": "Select all loaded",
   "连评论区一起下": "Include comments", "取消": "Cancel", "⬇ 下载选中的": "⬇ Download selected",
@@ -427,6 +430,9 @@ const I18N = {
   "其他": "Other", "导出文字记录": "Export text log", "跳过大于": "Skip files over", "不限": "no limit",
   "已经下过的文件会自动跳过，中途停了下次接着下。": "Already-downloaded files are skipped; stopping and resuming picks up where it left off.",
   "开始下载": "Start download",
+  "扫描": "Scan", "只扫上次之后的新消息": "Only messages since last time", "完整重扫": "Full rescan",
+  "第一次下载、或这次要的比上次多时，会自动完整扫描。老帖子下面新增的评论要“完整重扫”才有。":
+    "A full scan happens automatically the first time, or when you ask for more than last time. New comments under old posts need a full rescan.",
   // 下载管理
   "清除已结束": "Clear finished", "全部停止": "Stop all", "完成": "Done", "出错": "Error", "已停止": "Stopped", "已取消": "Cancelled",
   "个": "", "跳过已有": "skipped ", "去重": "deduped ", "失败": "failed ", "扫描": "scanned ",
@@ -500,7 +506,7 @@ function toast(s) {
 }
 function avatar(id, name, has, cls) {
   const ini = esc([...(name || "?").trim()][0] || "?").toUpperCase();
-  const img = has ? `<img loading="lazy" src="/api/avatar?t=${TOKEN}&peer=${id}" onerror="this.remove()">` : "";
+  const img = has ? `<img loading="lazy" src="/api/avatar?t=${TOKEN}&peer=${id}" data-drop>` : "";
   return `<div class="ava ${cls}" style="background:${COLORS[Math.abs(id || 0) % 7]}">${ini}${img}</div>`;
 }
 function listTime(iso) {
@@ -569,7 +575,7 @@ function renderChats() {
     (folder === "all" || c.kind === folder || (folder === "私聊" && ["私聊", "机器人", "收藏夹"].includes(c.kind)) ||
      (folder === "cmt" && c.comments) || (folder === "lock" && c.protected)));
   $("chatlist").innerHTML = rows.map(c => `
-    <div class="row ${cur && cur.chat === c.id ? "on" : ""}" onclick="openChat(${c.id})">
+    <div class="row ${cur && cur.chat === c.id ? "on" : ""}" data-do="openChat" data-arg="${c.id}">
       ${avatar(c.id, c.name, c.photo, "big")}
       <div class="mid">
         <div class="l1"><span class="nm">${c.kind === "频道" ? "📢 " : c.kind === "群组" ? "👥 " : ""}${esc(c.kind === "收藏夹" ? t("收藏夹") : c.name)}</span><span class="tm">${listTime(c.date)}</span></div>
@@ -644,17 +650,17 @@ function renderChat() {
   const sub = v.post ? esc(c.name) + (v.postItem && v.postItem.replies ? ` · ${v.postItem.replies}${t("条评论")}` : "") : v.search ? esc(c.name) + t("· 点消息跳到原位置") : esc(tags);
   $("chat").innerHTML = `
     <div class="head">
-      ${stack.length ? `<button class="icon" onclick="goBack()" title="${t("返回（Esc）")}">←</button>` : ""}
+      ${stack.length ? `<button class="icon" data-do="goBack" title="${t("返回（Esc）")}">←</button>` : ""}
       ${avatar(c.id, c.name, c.photo, "mid")}
       <div class="title grow"><div class="t1">${title}</div><div class="t2">${sub}</div></div>
       <div class="act">
-        ${v.post ? "" : `<button class="icon" onclick="askSearch()" title="${t("在这个聊天里搜索")}">🔍</button>`}
-        <button class="btn" onclick="toggleSelect()" id="selbtn">${t(v.selecting ? "取消选择" : "选择")}</button>
-        ${v.search ? "" : `<button class="btn" onclick="openModal()">⬇ ${t(v.post ? "下载全部评论" : "下载全部")}</button>`}
+        ${v.post ? "" : `<button class="icon" data-do="askSearch" title="${t("在这个聊天里搜索")}">🔍</button>`}
+        <button class="btn" data-do="toggleSelect" id="selbtn">${t(v.selecting ? "取消选择" : "选择")}</button>
+        ${v.search ? "" : `<button class="btn" data-do="openModal">⬇ ${t(v.post ? "下载全部评论" : "下载全部")}</button>`}
       </div>
     </div>
-    <div id="scroller"><div id="msgs"></div></div>
-    <button id="tobottom" class="hidden" onclick="toEnd()" title="${t("到最新")}">⌄</button>
+    <div class="scrollwrap"><div id="scroller"><div id="msgs"></div></div>
+      <button id="tobottom" class="hidden" data-do="toEnd" title="${t("到最新")}">⌄</button></div>
     <div class="selbar ${v.selecting ? "" : "hidden"}" id="selbar"></div>
     ${composerHtml(v)}`;
   $("scroller").onscroll = onScroll;
@@ -784,7 +790,7 @@ function inviteDialog(inv) {  // 没加入的私有群/频道邀请链接：和 
     <div style="color:var(--sub);margin-bottom:10px">${t(inv.channel ? "频道" : "群组")} · ${inv.count ?? "?"}${t("人")}${inv.request ? " · " + t("需要管理员同意") : ""}</div>
     ${inv.about ? `<div class="urlbox" style="white-space:pre-wrap">${esc(inv.about)}</div>` : ""}
     <div style="color:var(--sub);font-size:13px">${t("你还没加入，加入后才能看里面的消息。")}</div>
-    <div class="foot"><button class="btn" onclick="closeModal()">${t("取消")}</button>
+    <div class="foot"><button class="btn" data-do="closeModal">${t("取消")}</button>
       <button class="btn fill" id="joinBtn">${t(inv.request ? "申请加入" : inv.channel ? "加入频道" : "加入群组")}</button></div>`;
   $("joinBtn").onclick = async () => {
     $("joinBtn").disabled = true;
@@ -801,7 +807,7 @@ function inviteDialog(inv) {  // 没加入的私有群/频道邀请链接：和 
 }
 function confirmOpen(url) {
   $("modalBox").innerHTML = `<h3>${t("打开这个链接？")}</h3><div class="urlbox">${esc(url)}</div>
-    <div class="foot"><button class="btn" onclick="closeModal()">${t("取消")}</button><button class="btn fill" id="goUrl">${t("打开")}</button></div>`;
+    <div class="foot"><button class="btn" data-do="closeModal">${t("取消")}</button><button class="btn fill" id="goUrl">${t("打开")}</button></div>`;
   $("goUrl").onclick = () => { closeModal(); openExternal(url); };
   $("modal").classList.remove("hidden");
 }
@@ -859,7 +865,7 @@ function dlState(m) {
 function tileHtml(m, n) {
   const big = n === 1, sticker = m.kind === "sticker", round = m.kind === "round";
   const ratio = big && m.w && m.h ? `aspect-ratio:${Math.min(2.2, Math.max(0.55, m.w / m.h))}` : "";
-  const img = m.thumb ? `<img loading="lazy" src="${thumbUrl(m, big ? 640 : 320)}" alt="" onerror="this.remove()">` : "";
+  const img = m.thumb ? `<img loading="lazy" src="${thumbUrl(m, big ? 640 : 320)}" alt="" data-drop>` : "";
   const video = ["video", "gif", "round"].includes(m.kind);
   const info = m.kind === "gif" ? "GIF" : video ? [dur(m.duration), size(m.size)].filter(Boolean).join(" · ") : "";
   return `<div class="tile ${round ? "round" : ""} ${sticker ? "stk" : ""}" data-key="${m.key}" style="${ratio}">
@@ -881,7 +887,7 @@ function quoteHtml(q) {  // 回复引用：点了跳到被回复的那条
 function webHtml(w, it) {  // 链接预览卡片：点了打开链接
   return `<div class="web" data-act="url" data-v="${esc(w.url)}" title="${esc(w.url)}">
     <div class="wb">${w.site ? `<div class="ws">${esc(w.site)}</div>` : ""}${w.title ? `<div class="wt">${esc(w.title)}</div>` : ""}${w.desc ? `<div class="wd">${esc(w.desc)}</div>` : ""}</div>
-    ${w.thumb ? `<img loading="lazy" src="${thumbUrl({ vp: it.vp, id: w.id }, 320)}" alt="" onerror="this.remove()">` : ""}
+    ${w.thumb ? `<img loading="lazy" src="${thumbUrl({ vp: it.vp, id: w.id }, 320)}" alt="" data-drop>` : ""}
   </div>`;
 }
 function kbHtml(rows) {  // 帖子下面的按钮：链接按钮能点，回调按钮要给机器人发消息，这里不做
@@ -997,11 +1003,20 @@ function onMsgMenu(e) {
   if (it !== cur.postItem) items.push([t(cur.selecting ? "选中 / 取消选中" : "选择"), () => { if (!cur.selecting) toggleSelect(); toggleSel(it); }]);
   if (it.text) items.push([t("复制文字"), () => navigator.clipboard.writeText(it.text).then(() => toast(t("已复制")))]);
   if ($("msgIn") && it !== cur.postItem) items.push([t("回复"), () => setReply(it)]);
-  if (it.out) items.push([t("删除"), async () => {
-    try { await api("/api/delete", "POST", { chat: cur.chat, id: it.ids[0] }); cur.items = cur.items.filter(x => x !== it); renderMsgs(); loadChats(true); }
-    catch (e) { toast(e.message); }
-  }]);
+  if (it.out) items.push([t("删除"), () => confirmDelete(it)]);
   showMenu(e.clientX, e.clientY, items);
+}
+function confirmDelete(it) {  // 删了对所有人都没了，撤不回来：先问一句（TG 也会问）
+  const v = cur;
+  $("modalBox").innerHTML = `<h3>${t("删除这条消息？")}</h3>
+    <div style="color:var(--sub);font-size:14px">${t("所有人那边都会删掉，删了不能恢复。")}</div>
+    <div class="foot"><button class="btn" data-do="closeModal">${t("取消")}</button><button class="btn fill" id="delOk" style="background:var(--red)">${t("删除")}</button></div>`;
+  $("delOk").onclick = async () => {
+    closeModal();
+    try { await api("/api/delete", "POST", { chat: v.chat, id: it.ids[0] }); v.items = v.items.filter(x => x !== it); if (v === cur) renderMsgs(); loadChats(true); }
+    catch (e) { toast(e.message); }
+  };
+  $("modal").classList.remove("hidden");
 }
 function showMenu(x, y, items) {
   const m = $("menu");
@@ -1072,11 +1087,11 @@ function renderSelbar() {
   const n = v.sel.size, files = [...v.sel.values()].reduce((a, it) => a + it.media.length, 0);
   const withCmt = !v.post && v.c.comments;
   bar.innerHTML = `<b>${t("已选")}${n}${t("条")}</b><span style="color:var(--sub);font-size:14px">${files}${t("个文件")}</span>
-    <button class="btn" onclick="selectAllLoaded()">${t("全选已加载")}</button>
+    <button class="btn" data-do="selectAllLoaded">${t("全选已加载")}</button>
     ${withCmt ? `<label><input type="checkbox" id="selcmt">${t("连评论区一起下")}</label>` : ""}
     <span class="grow"></span>
-    <button class="btn" onclick="toggleSelect()">${t("取消")}</button>
-    <button class="btn fill" onclick="downloadSelected()" ${n ? "" : "disabled"}>${t("⬇ 下载选中的")}</button>`;
+    <button class="btn" data-do="toggleSelect">${t("取消")}</button>
+    <button class="btn fill" data-do="downloadSelected" ${n ? "" : "disabled"}>${t("⬇ 下载选中的")}</button>`;
 }
 function selectAllLoaded() { cur.items.forEach(it => cur.sel.set(it.ids[0], it)); renderMsgs(); renderSelbar(); }
 async function downloadSelected() {
@@ -1107,8 +1122,12 @@ function openModal() {
       <label><input type="checkbox" id="mtext" ${o.text ? "checked" : ""}>${t("导出文字记录")}</label>
       <span style="font-size:14px;margin-left:6px">${t("跳过大于")} <input class="numin" id="mmax" type="number" min="0" placeholder="${t("不限")}" value="${o.max}"> MB</span>
     </div></div>
+    ${v.post ? "" : `<div class="opt"><div class="lb">${t("扫描")}</div><div class="chips">
+      <label><input type="radio" name="scan" value="new" checked>${t("只扫上次之后的新消息")}</label>
+      <label><input type="radio" name="scan" value="full">${t("完整重扫")}</label>
+    </div><div style="color:var(--sub);font-size:12px;margin-top:6px">${t("第一次下载、或这次要的比上次多时，会自动完整扫描。老帖子下面新增的评论要“完整重扫”才有。")}</div></div>`}
     <div style="color:var(--sub);font-size:13px">${t("已经下过的文件会自动跳过，中途停了下次接着下。")}</div>
-    <div class="foot"><button class="btn" onclick="closeModal()">${t("取消")}</button><button class="btn fill" onclick="startAll()">${t("开始下载")}</button></div>`;
+    <div class="foot"><button class="btn" data-do="closeModal">${t("取消")}</button><button class="btn fill" data-do="startAll">${t("开始下载")}</button></div>`;
   $("modal").classList.remove("hidden");
 }
 function closeModal() { $("modal").classList.add("hidden"); if (modalCancel) { const f = modalCancel; modalCancel = null; f(); } }
@@ -1119,12 +1138,13 @@ async function startAll() {
     types: [...document.querySelectorAll("#mtypes input:checked")].map(i => i.value),
     text: $("mtext").checked, max: $("mmax").value,
   };
+  const incremental = (document.querySelector("#modalBox input[name=scan]:checked") || { value: "new" }).value !== "full";
   localStorage.setItem("tgdl.opts", JSON.stringify(v.post ? { ...defaults(), types: o.types, text: o.text, max: o.max } : o));
   closeModal();
   const dir = await askDir(v.post ? t("下载全部评论") : t("下载全部") + " · " + v.c.name);
   if (!dir) return;
   try {
-    await api("/api/start", "POST", { targets: [v.post ? { chat: v.chat, msg: v.post } : v.chat], scope: o.scope, types: o.types, text: o.text, max_size: parseFloat(o.max) || null, out_dir: dir });
+    await api("/api/start", "POST", { targets: [v.post ? { chat: v.chat, msg: v.post } : v.chat], scope: o.scope, types: o.types, text: o.text, max_size: parseFloat(o.max) || null, incremental, out_dir: dir });
     openDrawer();
   } catch (e) { toast(e.message); }
 }
@@ -1154,13 +1174,19 @@ async function pollJobs() {
       ${j.active.map(a => { const fp = a.size ? Math.round(a.got / a.size * 100) : 0; return `<div class="af"><span title="${esc(a.name)}">${esc(a.name)}</span><div class="bar"><i style="width:${fp}%"></i></div><span>${fp}%</span></div>`; }).join("")}
       ${j.logs.length ? `<div class="jl" title="${esc(j.logs.join("\n"))}">${esc(j.logs[j.logs.length - 1])}</div>` : ""}
       <div class="ja">
-        ${j.out ? `<button class="btn" onclick='openPath(${esc(JSON.stringify(j.out))})'>${t("打开文件夹")}</button>` : ""}
-        ${run || j.status === "排队中" ? `<button class="btn red" onclick="api('/api/cancel','POST',{id:${j.id}})">${t("停止")}</button>` : ""}
+        ${j.out ? `<button class="btn" data-do="openJobDir" data-arg="${esc(j.out)}">${t("打开文件夹")}</button>` : ""}
+        ${run || j.status === "排队中" ? `<button class="btn red" data-do="stopJob" data-arg="${j.id}">${t("停止")}</button>` : ""}
       </div>
     </div>`;
   }).join("") : `<div class="empty">${t("还没有下载任务")}<br><br>${t("在聊天里点图片/文件上的 ⬇，或者点右上角“下载全部”")}</div>`;
 }
-function openPath(path, reveal) { api("/api/open", "POST", { path, reveal: reveal ? 1 : 0 }).catch(e => toast(e.message)); }
+function openPath(path, reveal) {
+  api("/api/open", "POST", { path, reveal: reveal ? 1 : 0 })
+    .then(r => { if (r.risky) toast(LANG === "en"
+      ? `${r.risky} files can run code and may be malware — shown in its folder instead. Open it yourself only if you trust it.`
+      : `${r.risky} 文件能直接运行程序，可能带病毒，没有直接打开，已在文件夹里选中。确认可信再自己双击。`); })
+    .catch(e => toast(e.message));
+}
 
 
 /* ================= 发消息 ================= */
@@ -1171,18 +1197,19 @@ function composerHtml(v) {
   if (!ok) return `<div class="composer"><div class="nosend">${t("这里不能发言")}</div></div>`;
   return `<div class="composer">
     <div class="reply hidden" id="replyBar"><div class="rt"><b id="replyWho"></b><span id="replyTxt"></span></div>
-      <button class="icon" style="width:28px;height:28px" onclick="setReply(null)">✕</button></div>
+      <button class="icon" style="width:28px;height:28px" data-do="clearReply">✕</button></div>
     <div class="files hidden" id="outFiles"></div>
     <div class="box">
-      <button class="icon" onclick="$('fileIn').click()" title="${t("发送文件")}">📎</button>
+      <button class="icon" data-do="pickFile" title="${t("发送文件")}">📎</button>
       <textarea id="msgIn" rows="1" placeholder="${t("写点什么…")}"></textarea>
-      <button class="send" id="sendBtn" onclick="doSend()" title="${t("发送")}">➤</button>
+      <button class="send" id="sendBtn" data-do="doSend" title="${t("发送")}">➤</button>
     </div>
-    <input type="file" id="fileIn" multiple class="hidden" onchange="addFiles(this.files)">
+    <input type="file" id="fileIn" multiple class="hidden">
   </div>`;
 }
 function bindComposer() {
   const ta = $("msgIn"); if (!ta) return;
+  $("fileIn").onchange = e => { addFiles(e.target.files); e.target.value = ""; };  // 清空，下次选同一个文件也能触发
   ta.oninput = () => { ta.style.height = "auto"; ta.style.height = Math.min(140, ta.scrollHeight) + "px"; };
   ta.onkeydown = e => {               // 回车发送，Shift+回车换行
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); doSend(); }
@@ -1211,7 +1238,7 @@ function renderOutbox() {
   const box = $("outFiles"); if (!box) return;
   box.classList.toggle("hidden", !outbox.length);
   box.innerHTML = outbox.map((f, i) =>
-    `<div class="f"><span title="${esc(f.name)}">${esc(f.name)}</span><b onclick="dropFile(${i})">✕</b></div>`).join("");
+    `<div class="f"><span title="${esc(f.name)}">${esc(f.name)}</span><b data-do="dropFile" data-arg="${i}">✕</b></div>`).join("");
 }
 function dropFile(i) { outbox.splice(i, 1); renderOutbox(); }
 async function doSend() {
@@ -1325,7 +1352,7 @@ function stopStage() {  // 换下一个/关掉时一定要停掉，不然视频�
 }
 function infoCard(m, why) {
   return `<div class="vinfo"><div class="big">${FILE_ICON[previewKind(m)] || "📄"}</div><b>${esc(m.name || t(m.label))}</b>
-    <span>${[size(m.size), m.mime].filter(Boolean).join(" · ")}</span><div style="margin-top:12px;color:#ccc">${esc(why)}</div></div>`;
+    <span>${esc([size(m.size), m.mime].filter(Boolean).join(" · "))}</span><div style="margin-top:12px;color:#ccc">${esc(why)}</div></div>`;
 }
 async function openViewer(key) {
   const rec = cur.media.get(key); if (!rec) return;
@@ -1425,6 +1452,41 @@ function markPlaying() {  // 正在放的那行图标变成 ⏸
 $("paudio").onplay = $("paudio").onpause = markPlaying;
 
 addEventListener("mouseup", e => { if (e.button === 3 && cur && stack.length) { e.preventDefault(); goBack(); } });
+
+/* ================= 按钮动作 ================= */
+// 页面里不写 onclick 属性这种内联脚本：CSP 只放行带本次 nonce 的这一段脚本，内联事件一律不执行。
+// 这样就算哪天哪里漏了转义，消息里注入的 onerror= 之类也跑不起来。
+// 按钮上写 data-do="动作名"（参数放 data-arg），这里统一分发。
+const ACTIONS = {
+  retry: () => api("/api/retry", "POST"),
+  openDownloads: () => openPath(""),
+  toggleTheme: () => setTheme(THEME === "dark" ? "light" : "dark"),
+  toggleLang: () => setLang(LANG === "zh" ? "en" : "zh"),
+  openDrawer: () => openDrawer(), closeDrawer: () => closeDrawer(),
+  clearJobs: () => api("/api/clear", "POST").then(pollJobs),
+  stopAll: () => api("/api/cancel", "POST", {}),
+  stopJob: el => api("/api/cancel", "POST", { id: +el.dataset.arg }),
+  openJobDir: el => openPath(el.dataset.arg),
+  closeModal: () => closeModal(), closeViewer: () => closeViewer(), stopAudio: () => stopAudio(),
+  viewPrev: () => viewStep(-1), viewNext: () => viewStep(1),
+  openChat: el => openChat(+el.dataset.arg),
+  goBack: () => goBack(), askSearch: () => askSearch(), toggleSelect: () => toggleSelect(),
+  openModal: () => openModal(), toEnd: () => toEnd(),
+  selectAllLoaded: () => selectAllLoaded(), downloadSelected: () => downloadSelected(), startAll: () => startAll(),
+  clearReply: () => setReply(null), pickFile: () => $("fileIn").click(), doSend: () => doSend(),
+  dropFile: el => dropFile(+el.dataset.arg),
+};
+addEventListener("click", e => {
+  const el = e.target.closest("[data-do]");
+  if (!el || !ACTIONS[el.dataset.do]) return;
+  const r = ACTIONS[el.dataset.do](el, e);
+  if (r && r.catch) r.catch(err => toast(err.message));  // 请求失败要让人知道，别悄悄吞掉
+});
+// 缩略图/头像加载失败就去掉（以前写在 img 的 onerror 属性里）。error 事件不冒泡，所以在捕获阶段接
+addEventListener("error", e => { if (e.target instanceof HTMLImageElement && e.target.hasAttribute("data-drop")) e.target.remove(); }, true);
+$("pwForm").onsubmit = sendPassword;
+$("q").oninput = renderChats;
+
 applyStaticLang();
 addEventListener("pagehide", () => navigator.sendBeacon(`/api/bye?t=${TOKEN}`));
 pollState();
