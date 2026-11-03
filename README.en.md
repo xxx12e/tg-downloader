@@ -70,6 +70,7 @@ A normal download fetches one chunk at a time, so most of the time is spent wait
 - **Downloads and playback share one budget**, so watching a video while downloading doesn't stall either one
 - **Automatic deduplication**: channels often repost the same files; identical files are detected by Telegram's file ID and stored only once
 - Already-downloaded files are skipped, interrupted jobs resume, rate limits are waited out automatically
+- **Running "Download all" again only scans messages since last time** — no re-reading a huge channel from the start. Pick "Full rescan" to catch new comments under old posts
 
 ## Setup
 
@@ -90,7 +91,10 @@ You can also set it explicitly: `"socks5://127.0.0.1:7890"` or `"http://127.0.0.
 
 ## Running
 
-Double-click **启动.bat** (installs dependencies on first run), or:
+Double-click **启动.bat**. The first run creates a private `.venv` inside the app folder (your system Python is left alone)
+and installs from `requirements.lock`, where versions and hashes are pinned, so a tampered package fails to install. Lock updates are picked up automatically.
+
+Or install manually:
 
 ```bash
 pip install -r requirements.txt
@@ -133,13 +137,26 @@ downloads/<chat name>_<id>/
 ## Notes
 
 - `data/` holds your login session. **Never share it or commit it** (`.gitignore` already excludes it).
-  To revoke: delete `data/tg.session`, then remove the session under **Settings → Devices** in Telegram.
+  It's encrypted with Windows DPAPI in `data/tg.session.dpapi` (an old plaintext `tg.session` is converted and deleted automatically):
+  copied to another PC or Windows account it can't be decrypted, so **moving to a new PC means scanning the QR code again**.
+  Malware running under your own account can still decrypt it, so don't run programs you don't trust.
+  To revoke: delete `data/tg.session.dpapi`, then remove the session under **Settings → Devices** in Telegram.
 - This only saves content your own account can already see. **Keep what you download to yourself.**
 - **Executables posted in channels (exe / bat / py …) are never run when you click Open** — they're only shown in their folder, so you decide whether to double-click.
   Downloaded files get the same "from the internet" mark a browser adds, so Windows warns before running them and Office opens documents in Protected View.
-- Don't keep the app folder inside OneDrive / Dropbox or another synced folder, or your login session in `data/` gets uploaded to the cloud.
 - Check `data/运行日志.txt` if something goes wrong.
 - Only tested on Windows.
+
+## Development
+
+```bash
+pip install -r requirements.txt pytest
+python -m pytest
+```
+
+Runs on any OS; the Windows-only tests (DPAPI, folder picker, Mark of the Web) are skipped elsewhere.
+GitHub Actions runs the suite on Windows and Linux and also runs `启动.bat` for real.
+The command for refreshing pinned versions is at the top of `requirements.lock`.
 
 ## License
 

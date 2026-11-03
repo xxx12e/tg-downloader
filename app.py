@@ -182,8 +182,9 @@ async def guard(request, handler):
     return await handler(request)
 
 
-# 首页：脚本、样式、图片、请求都只许来自本机这个服务；不许被别的网页套在 iframe 里
-PAGE_CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+# 首页：只有带本次随机 nonce 的那个 <script> 能跑，onclick=/onerror= 这种内联脚本一律不执行
+# （消息内容万一漏了转义，注入的代码也跑不起来）；样式、图片、请求都只许来自本机这个服务；不许被别的网页套在 iframe 里
+PAGE_CSP = ("default-src 'self'; script-src 'nonce-{nonce}'; style-src 'self' 'unsafe-inline'; "
             "img-src 'self' data:; media-src 'self'; frame-src 'self'; connect-src 'self'; object-src 'none'; "
             "base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 
@@ -214,9 +215,10 @@ def under_downloads(path):
 
 @routes.get("/")
 async def index(_):
-    html = (WEB / "index.html").read_text("utf-8").replace("{{TOKEN}}", TOKEN)
+    nonce = secrets.token_urlsafe(18)  # 每次打开页面都换一个
+    html = (WEB / "index.html").read_text("utf-8").replace("{{TOKEN}}", TOKEN).replace("{{NONCE}}", nonce)
     return web.Response(text=html, content_type="text/html",
-                        headers={"Cache-Control": "no-store", "Content-Security-Policy": PAGE_CSP})
+                        headers={"Cache-Control": "no-store", "Content-Security-Policy": PAGE_CSP.format(nonce=nonce)})
 
 
 # ---- 登录 ----
@@ -640,7 +642,8 @@ async def main():
     lock = single_instance()
     if lock is None:  # 已经开着了，再弹一个窗口就行
         port = PORT_FILE.read_text().strip() if PORT_FILE.exists() else PORT
-        open_window(f"http://127.0.0.1:{port}/")
+        if "--no-window" not in sys.argv:
+            open_window(f"http://127.0.0.1:{port}/")
         return
 
     webapp = web.Application(middlewares=[guard])
