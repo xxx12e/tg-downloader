@@ -65,5 +65,6 @@ jobs:
           $before = (Get-Item .venv\installed.lock).LastWriteTimeUtc
           $out = cmd /c ".\_ci_launch.bat --no-window < NUL" 2>&1 | Out-String
           Write-Output $out
-          if ($out -match "pip install") { throw "pip ran again although requirements.lock did not change" }
+          # 看 pip 自己的输出（echo on 时 cmd 会把整个 if 块原样打出来，哪怕没执行，所以不能搜命令本身）
+          if ($out -match "Requirement already satisfied|Collecting|Successfully installed") { throw "pip ran again although requirements.lock did not change" }
           if ((Get-Item .venv\installed.lock).LastWriteTimeUtc -ne $before) { throw "installed.lock was rewritten" }
