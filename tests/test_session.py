@@ -81,6 +81,34 @@ def test_falls_back_to_plaintext_when_crypto_broken(monkeypatch):
     assert (core.DATA / "tg.session").exists()       # 加密失败绝不能把明文删了
 
 
+def test_broken_crypto_does_not_touch_encrypted_file(monkeypatch):
+    monkeypatch.setattr(core, "CRYPT", fake_crypt)
+    s = core.open_session()
+    s.set_dc(2, "149.154.167.51", 443)
+    s.auth_key = AuthKey(os.urandom(256))
+    s.save()
+    before = core.SESSION_ENC.read_bytes()
+
+    def broken(data, encrypt):
+        raise OSError("DPAPI gone")
+    monkeypatch.setattr(core, "CRYPT", broken)
+    assert core.open_session() == str(core.SESSION)               # 退回明文，能登录
+    assert core.SESSION_ENC.read_bytes() == before                # 加密文件原样留着，没被当成坏文件挪走
+    assert not (core.DATA / "tg.session.dpapi.bad").exists()
+
+
+def test_save_failure_does_not_break_connection(monkeypatch):
+    monkeypatch.setattr(core, "CRYPT", fake_crypt)
+    s = core.open_session()
+    s.set_dc(2, "149.154.167.51", 443)
+    s.auth_key = AuthKey(os.urandom(256))
+
+    def broken(data, encrypt):
+        raise OSError("disk full")
+    monkeypatch.setattr(core, "CRYPT", broken)
+    assert s.save()                                                # 不抛异常，照样返回会话串
+
+
 def test_roundtrip_mismatch_keeps_plaintext(monkeypatch):
     monkeypatch.setattr(core, "CRYPT", lambda data, encrypt: data if encrypt else b"something else")
     make_plain_session(os.urandom(256))

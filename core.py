@@ -342,8 +342,11 @@ class LockedSession(StringSession):
     def save(self):
         s = super().save()
         if s and s != self._saved:
-            write_atomic(self._path, CRYPT(s.encode(), True))
-            self._saved = s
+            try:
+                write_atomic(self._path, CRYPT(s.encode(), True))
+                self._saved = s
+            except Exception as e:  # 存不下来也别让连接失败：这次照样能用，只是下次要重新扫码
+                log.warning("登录状态存不下来: %r", e)
         return s
 
 
@@ -361,6 +364,8 @@ def open_session():
 
 def _open_locked():
     plain = SESSION.with_name(SESSION.name + ".session")  # data/tg.session
+    if CRYPT(CRYPT(b"probe", True), False) != b"probe":  # DPAPI 整个不能用时先发现，别动任何文件
+        raise OSError("DPAPI 不可用")
     if SESSION_ENC.exists():
         try:
             return LockedSession(SESSION_ENC, CRYPT(SESSION_ENC.read_bytes(), False).decode())
