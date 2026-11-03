@@ -7,13 +7,13 @@ rem First run: create a private Python environment in .venv (your global Python 
 rem "python" first = the one you added to PATH; "py" (newest installed) only as a fallback.
 if not exist "%PY%" (
   echo Preparing the first run, please wait...
-  python -m venv .venv 2>/dev/null || py -3 -m venv .venv 2>NUL
+  python -m venv .venv 2>NUL || py -3 -m venv .venv 2>NUL
   if not exist "%PY%" goto nopython
 )
 
 rem Install dependencies when requirements.lock changed. Versions and hashes are pinned,
 rem so a tampered package fails to install instead of running.
-fc /b requirements.lock .venv\installed.lock >/dev/null 2>&1
+fc /b requirements.lock .venv\installed.lock >NUL 2>&1
 if errorlevel 1 (
   "%PY%" -m pip install --disable-pip-version-check --require-hashes -r requirements.lock || goto pipfail
   rem cryptg only speeds up downloads. Prebuilt packages only: never compile it here

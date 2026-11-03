@@ -48,8 +48,12 @@ jobs:
         run: |
           # 跑一份打开了 echo 的副本（内容完全一样），出问题时日志里能看到执行到了哪一行
           (Get-Content .\启动.bat) -replace '^@echo off', '@echo on' | Set-Content -Encoding ascii .\_ci_launch.bat
-          cmd /c ".\_ci_launch.bat --no-window < NUL"
-          if ($LASTEXITCODE -ne 0) { throw "启动.bat exited with $LASTEXITCODE" }
+          $out = cmd /c ".\_ci_launch.bat --no-window < NUL" 2>&1 | Out-String
+          $code = $LASTEXITCODE
+          Write-Output $out
+          if ($code -ne 0) { throw "启动.bat exited with $code" }
+          # 重定向写错（比如写成 /dev/null）时 cmd 只报这一句、跳过那条命令，退出码却还是 0 —— 真出过
+          if ($out -match "cannot find the path|is not recognized") { throw "a command in 启动.bat failed to run" }
           if (-not (Test-Path .venv\installed.lock)) { throw "requirements.lock was not installed" }
           # .venv 要用 PATH 上的那个 python（就是装 Python 时勾了 Add to PATH 的那个），不是随便挑最新的
           .venv\Scripts\python.exe -c "import sys, telethon, aiohttp, qrcode, python_socks; v = '%d.%d' % sys.version_info[:2]; assert v == '${{ matrix.python }}', v; print('venv python', v, 'telethon', telethon.__version__)"
@@ -58,5 +62,8 @@ jobs:
       - name: Second run skips reinstall
         shell: pwsh
         run: |
-          $out = cmd /c ".\启动.bat --no-window < NUL" 2>&1 | Out-String
-          if ($out -match "Collecting|Installing") { throw "dependencies were reinstalled: $out" }
+          $before = (Get-Item .venv\installed.lock).LastWriteTimeUtc
+          $out = cmd /c ".\_ci_launch.bat --no-window < NUL" 2>&1 | Out-String
+          Write-Output $out
+          if ($out -match "pip install") { throw "pip ran again although requirements.lock did not change" }
+          if ((Get-Item .venv\installed.lock).LastWriteTimeUtc -ne $before) { throw "installed.lock was rewritten" }

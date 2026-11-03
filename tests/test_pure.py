@@ -154,6 +154,15 @@ def test_risky_ext_includes_python():
     assert not {".jpg", ".mp4", ".pdf", ".txt"} & core.RISKY_EXT
 
 
+def test_launcher_is_valid_windows_batch():
+    """启动.bat 要 CRLF（cmd 在纯 LF 的批处理里找 goto 标签会出错），只能往 NUL 重定向（写成 /dev/null 在 Windows 上
+    会“找不到路径”，命令直接不执行 —— 真出过：依赖整个没装）。"""
+    data = (Path(core.ROOT) / "启动.bat").read_bytes()
+    assert b"/dev/null" not in data
+    assert data.count(b"\n") == data.count(b"\r\n")
+    assert b"--require-hashes -r requirements.lock" in data and b"--only-binary=:all:" in data
+
+
 def test_page_has_no_inline_handlers():
     """CSP 不放行内联脚本：页面里不能再有 onclick= 这种，否则按钮会失效。"""
     import re
