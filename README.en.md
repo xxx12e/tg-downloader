@@ -109,7 +109,8 @@ A QR code appears on first launch — scan it with your phone: **Settings → De
 | Every comment on a post | open the comment thread → **Download all comments** |
 
 **Every download asks where to save it first**, listing folders you've used before, or pick a new one.
-If the same file already exists in another folder, it's copied over instead of downloaded again.
+If the folder you pick already has the same file — even renamed, moved, or saved by the official app — it's skipped.
+If it exists in another folder, it's copied over instead of downloaded again.
 
 The **⬇** in the top left is the download manager (progress, speed, per-task stop); **📁** opens the download folder.
 

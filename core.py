@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import socket
+import time
 from collections import OrderedDict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -59,6 +60,9 @@ LANG = "zh"  # 由界面通过 /api/lang 设置
 EN = {
     "完成：新下载 {ok} 个，跳过已有 {skip} 个": "Done: {ok} new, {skip} already had",
     "（其中 {dup} 个是频道重复发的，没重复下）": " ({dup} were reposts, not downloaded again)",
+    "，{found} 个是文件夹里本来就有的": ", {found} were already in the folder",
+    "检查目标文件夹里已有的文件…": "Checking what's already in the folder…",
+    "目标文件夹里已有 {n} 个文件，一样的不会重复下": "{n} files already in the folder; identical ones won't be downloaded again",
     "，失败 {fail} 个": ", {fail} failed",
     "已停止。下次再下同一个会跳过已下好的文件": "Stopped. Re-running skips whatever is already downloaded",
     "出错：{e}": "Error: {e}",
@@ -453,6 +457,53 @@ def note_file(fid, path):
     if fid:
         DOWNLOADED[fid] = str(path)
         CLAIMED.pop(fid, None)
+
+
+SKIP_DIRS = {"$RECYCLE.BIN", "System Volume Information"}
+HEAD = 64 * 1024  # 名字对不上时，拿开头这么多字节跟本地文件比
+
+
+def scan_dir(root, limit=300_000, budget=15.0):
+    """把目标文件夹里已有的文件按大小建表。换了名字、放在别的子文件夹里也能认出来。
+    文件夹特别大（比如选了整个 D 盘）时最多看 30 万个 / 15 秒，不至于卡住。"""
+    by_size, n, t0 = {}, 0, time.monotonic()
+    stack = [str(root)]
+    while stack and n < limit and time.monotonic() - t0 < budget:
+        try:
+            it = os.scandir(stack.pop())
+        except OSError:
+            continue
+        with it:
+            for e in it:
+                try:
+                    if e.is_dir(follow_symlinks=False):
+                        if e.name not in SKIP_DIRS and not e.name.startswith("."):
+                            stack.append(e.path)
+                    elif e.is_file(follow_symlinks=False) and not e.name.endswith(".part"):
+                        if size := e.stat().st_size:
+                            by_size.setdefault(size, []).append(e.path)
+                            n += 1
+                except OSError:
+                    pass
+    return by_size, n
+
+
+def same_name(path, msg, kind):
+    """本工具的命名（日期_ID_原名）或 Telegram 自己存的原文件名。"""
+    n = Path(path).name.lower()
+    if n == file_name(msg, kind).lower():
+        return True
+    if msg.file and msg.file.name:
+        orig, s = msg.file.name.lower(), safe(msg.file.name).lower()
+        return n in (orig, s) or n.endswith("_" + s)
+    return False
+
+
+async def remote_head(client, msg):
+    buf = b""
+    async for c in client.iter_download(msg.document or msg.photo, request_size=HEAD, limit=1):
+        buf += c
+    return buf
 
 
 def save_index():
@@ -1034,7 +1085,8 @@ class Job:
         self.max_bytes = float(mb) * 1024 * 1024 if mb else None
         self.scope = opts.get("scope") or "both"
         self.text = opts.get("text", True)
-        self.scan = self.total = self.done = self.ok = self.bytes = self.skip = self.dup = 0
+        self.scan = self.total = self.done = self.ok = self.bytes = self.skip = self.dup = self.found = 0
+        self.local = None  # 目标文件夹里已有的文件，按大小分好；第一次要用时才扫
         self.comment_posts = self.comments = 0
         self.root = Path(opts.get("out_dir") or DEFAULT_OUT)  # 这一次下到哪个文件夹
         self.fail = []
@@ -1052,7 +1104,7 @@ class Job:
             "id": self.id, "title": self.title, "status": self.status,
             "out": str(self.out) if self.out else None, "picked": bool(self.picked),
             "scan": self.scan, "total": self.total, "done": self.done, "ok": self.ok, "skip": self.skip,
-            "fail": len(self.fail), "dup": self.dup, "bytes": self.bytes + sum(a["got"] for a in self.active.values()),
+            "fail": len(self.fail), "dup": self.dup, "found": self.found, "bytes": self.bytes + sum(a["got"] for a in self.active.values()),
             "comment_posts": self.comment_posts, "comments": self.comments,
             "active": list(self.active.values()), "logs": list(self.logs)[-30:],
         }
@@ -1063,6 +1115,7 @@ class Job:
             self.status = "完成"
             self.say(tr("完成：新下载 {ok} 个，跳过已有 {skip} 个", ok=self.ok, skip=self.skip)
                      + (tr("（其中 {dup} 个是频道重复发的，没重复下）", dup=self.dup) if self.dup else "")
+                     + (tr("，{found} 个是文件夹里本来就有的", found=self.found) if self.found else "")
                      + (tr("，失败 {fail} 个", fail=len(self.fail)) if self.fail else ""))
         except asyncio.CancelledError:
             self.status = "已停止"
@@ -1188,13 +1241,21 @@ class Job:
             note_file(fid, path)
             FILES[key] = {"s": "done", "path": str(path)}
             return
-        if have := have_file(fid):
-            # 这个文件之前下过（频道重复发，或者下到别的文件夹了）
-            if Path(have).parent == path.parent:
-                self.skip += 1
-                self.dup += 1
-                FILES[key] = {"s": "done", "path": have, "dup": True}
-                return
+        have = have_file(fid)
+        if have and Path(have).is_relative_to(self.root):
+            # 这个文件之前下过，就在这次选的文件夹里（频道重复发 / 之前下到了这里）
+            self.skip += 1
+            self.dup += 1
+            FILES[key] = {"s": "done", "path": have, "dup": True}
+            return
+        if same := await self.find_local(msg, kind):
+            # 文件夹里本来就有一样的（别的工具下的、改过名、挪过位置都算）
+            self.skip += 1
+            self.found += 1
+            note_file(fid, same)
+            FILES[key] = {"s": "done", "path": same, "dup": True}
+            return
+        if have:
             try:  # 这次要存到别的文件夹：直接从已有的那份复制，不用再下一遍
                 path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(have, path)
@@ -1213,6 +1274,38 @@ class Job:
         self.keys.add(key)
         FILES[key] = {"s": "queued", "got": 0, "size": (msg.file.size if msg.file else 0) or 0, "path": str(path)}
         await self.queue.put((msg, path))
+
+    async def find_local(self, msg, kind):
+        """在这次选的文件夹里找内容一样的文件：大小一样 + 名字对得上；名字对不上就比开头 64KB。"""
+        size = (msg.file.size if msg.file else 0) or 0
+        if not size:
+            return None
+        if self.local is None:
+            self.say(tr("检查目标文件夹里已有的文件…"))
+            self.local, n = await asyncio.to_thread(scan_dir, self.root)
+            self.say(tr("目标文件夹里已有 {n} 个文件，一样的不会重复下", n=n))
+        cands = self.local.get(size)
+        if not cands:
+            return None
+        if hit := next((p for p in cands if same_name(p, msg, kind)), None):
+            return hit
+        try:
+            head = await remote_head(self.client, msg)
+        except Exception as e:
+            log.info("比对开头失败，照常下载: %r", e)
+            return None
+        if not head:
+            return None
+
+        def match():
+            for p in cands:
+                try:
+                    with open(p, "rb") as f:
+                        if f.read(len(head)) == head:
+                            return p
+                except OSError:
+                    pass
+        return await asyncio.to_thread(match)
 
     async def worker(self):
         while (item := await self.queue.get()) is not None:
