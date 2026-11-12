@@ -706,6 +706,15 @@ def webpage_of(m):
             "desc": (w.description or "")[:300], "thumb": bool(m.photo and pick_thumb(m))}
 
 
+async def fetch_msgs(client, chat, post, ids):
+    """按消息号重新拿消息（后台重启过、缓存没了的时候用）。post 不为空 = 频道帖子的评论，评论其实在讨论组里。"""
+    entity = await resolve(client, chat)
+    if post and isinstance(entity, types.Channel) and entity.broadcast:
+        r = await client(functions.messages.GetDiscussionMessageRequest(entity, post))
+        entity = await client.get_input_entity(r.messages[0].peer_id)
+    return [m for m in await client.get_messages(entity, ids=list(ids)) if m]
+
+
 async def reply_quotes(client, msgs, in_thread):
     """回复引用：一页只多发一次请求。返回 {消息ID: 引用信息}。"""
     want = {}

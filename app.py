@@ -63,6 +63,7 @@ class App:
         self.outq_ids = 0
         self.hooked = set()  # 已经挂上“回复我的”监听的客户端
         self.nav = None  # 资源管理器右键传进来的文件，等界面来取
+        self.batch = {}  # (聊天, 帖子) -> (结果, 要的消息号)：缓存没有时凑一批重新拿
 
     # ---- 登录 ----
     def start_boot(self):
@@ -159,6 +160,28 @@ class App:
         # 发完的留 10 分钟给界面看，之后清掉
         cut = time.time() - 600
         self.outq = [x for x in self.outq if x["status"] not in ("sent", "fail") or x.setdefault("done_at", time.time()) > cut]
+
+    async def refetch(self, chat, post, mid):
+        k = (chat, post)
+        if k not in self.batch:
+            fut, ids = asyncio.get_running_loop().create_future(), set()
+            self.batch[k] = (fut, ids)
+
+            async def run():
+                await asyncio.sleep(0.05)  # 等一下，把同一页同时要的凑到一起
+                self.batch.pop(k, None)
+                try:
+                    msgs = []
+                    for i in range(0, len(ids), 100):
+                        msgs += await core.fetch_msgs(self.client, chat, post, sorted(ids)[i:i + 100])
+                    fut.set_result({m.id: m for m in msgs})
+                except Exception as e:
+                    fut.set_exception(e)
+
+            asyncio.create_task(run())
+        fut, ids = self.batch[k]
+        ids.add(mid)
+        return (await asyncio.shield(fut)).get(mid)
 
     async def save_avatar(self, s, client):
         """切号菜单里要显示每个号的头像，没连上的号也要能显示，所以存一份到本地。"""
@@ -424,16 +447,25 @@ async def open_url(request):
     return ok()
 
 
-def cached_msg(q):
-    msg = app.msgs.get((int(q["chat"]), int(q.get("post") or 0), int(q["id"])))
+async def cached_msg(q):
+    """浏览时拿到的消息。后台重启过（窗口还开着）缓存就空了：这时去 Telegram 重新拿，
+    同一时间要的一批（一页缩略图）合成一次请求，免得被限流。"""
+    key = (int(q["chat"]), int(q.get("post") or 0), int(q["id"]))
+    msg = app.msgs.get(key)
     if msg is None:
-        raise web.HTTPNotFound()
+        try:
+            msg = await app.refetch(*key)
+        except Exception as e:
+            log.info("重新拿消息失败 %s: %r", key, e)
+        if msg is None:
+            raise web.HTTPNotFound()
+        app.msgs[key] = msg
     return msg
 
 
 @routes.get("/api/thumb")
 async def thumb(request):
-    msg, w = cached_msg(request.query), int(request.query.get("w") or 200)
+    msg, w = await cached_msg(request.query), int(request.query.get("w") or 200)
     key = ("thumb", msg.chat_id, msg.id, w)
     return image(await app.preview(key, lambda: core.thumb_bytes(app.client, msg, w)))
 
@@ -441,7 +473,7 @@ async def thumb(request):
 @routes.get("/api/photo")
 async def photo(request):
     """看大图：整张原图（只限图片）。"""
-    msg = cached_msg(request.query)
+    msg = await cached_msg(request.query)
     if not msg.photo:
         raise web.HTTPNotFound()
     return image(await app.client.download_media(msg, file=bytes))
@@ -467,7 +499,7 @@ async def stream(request):
         except web.HTTPForbidden:
             pass
     key = (int(q["chat"]), int(q.get("post") or 0), int(q["id"]))
-    msg = cached_msg(q)
+    msg = await cached_msg(q)
     if not msg.document or not msg.file.size:
         raise web.HTTPNotFound()
     size = msg.file.size
@@ -516,7 +548,7 @@ async def stream(request):
 async def warm(request):
     """点开视频/音频时先调这个，把开头和结尾并发抓进缓存，省掉播放器来回试探的等待。"""
     try:
-        msg = cached_msg(await request.json())
+        msg = await cached_msg(await request.json())
     except web.HTTPNotFound:
         return ok(skipped=True)
     if msg.document and (msg.file.size or 0) > 2 * core.CHUNK:
@@ -778,6 +810,13 @@ async def start(request):
             core.remember_dir(d)
         except OSError as e:
             return web.json_response({"error": str(e)}, status=400)
+    async def want(chat, post, i):  # 后台重启过的话，选中的消息要重新拿
+        try:
+            await cached_msg({"chat": chat, "post": post, "id": i})
+        except web.HTTPNotFound:
+            pass
+    await asyncio.gather(*(want(t["chat"], t.get("post") or 0, i) for t in targets
+                           if isinstance(t, dict) and "ids" in t for i in t["ids"]))
     new = app.start(targets, body)
     if not new:
         return web.json_response({"error": core.tr("消息找不到了，重新打开这个聊天再试")}, status=400)
