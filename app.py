@@ -41,8 +41,12 @@ log = logging.getLogger("tg")
 class App:
     def __init__(self):
         self.stage = "connecting"  # connecting / qr / password / ready / error
-        self.qr = self.hint = self.error = self.me = None
+        self.qr = self.hint = self.error = self.me = self.notice = None
         self.client = None
+        self.session = core.active_session()  # 当前用的是哪个号的登录文件
+        self.clients = {}  # 登录文件 -> 已连上的客户端。切号不断开，别的号的下载照样跑
+        self.adding = None  # 正在加新号时，记着原来那个号，点取消就切回去
+        self.boot_task = None
         self.password = None
         self.chats = None
         self.jobs = []
@@ -54,21 +58,103 @@ class App:
         self.preview_sem = asyncio.Semaphore(12)  # 缩略图/头像同时拉几个
 
     # ---- 登录 ----
+    def start_boot(self):
+        self.boot_task = asyncio.create_task(self.boot())
+
     async def boot(self):
-        self.stage, self.error = "connecting", None
+        s = self.session
+        self.stage, self.error, self.qr = "connecting", None, None
+        client = self.clients.get(s)
+        if client is not None and not client.is_connected():  # 断线了（比如电脑睡眠过）：重新连
+            self.clients.pop(s, None)
+            client = None
         try:
-            if self.client is None:
-                self.client = await core.connect(core.load_config())
-            await core.login(self.client, self.show_qr, self.ask_password)
-            self.me = utils.get_display_name(await self.client.get_me())
+            if client is None:
+                client = await core.connect(core.load_config(), s)
+                self.clients[s] = client
+            await core.login(client, self.show_qr, self.ask_password)
+            me = await client.get_me()
+            same = next((a for a in core.accounts() if a["id"] == me.id and a["s"] != s), None)
+            if same:  # 扫的是已经登着的号：多出来的这份登录退掉，直接切过去
+                await client.log_out()
+                self.clients.pop(s, None)
+                core.drop_session_files(s)
+                self.session, self.adding, self.notice = same["s"], None, "这个号已经登录过了，直接切换过去了"
+                return await self.boot()
+            self.me = utils.get_display_name(me)
+            core.save_account(s, me.id, self.me)
+            core.set_active(s)
+            self.client, self.adding = client, None
             self.stage = "ready"
-            log.info("已登录：%s", self.me)
+            log.info("已登录：%s（%s）", self.me, s)
+            asyncio.create_task(self.save_avatar(s, client))
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             log.exception("登录失败")
             self.stage, self.error = "error", str(e)
-            if self.client:
-                await self.client.disconnect()
-                self.client = None
+            if client:
+                self.clients.pop(s, None)
+                await client.disconnect()
+
+    async def save_avatar(self, s, client):
+        """切号菜单里要显示每个号的头像，没连上的号也要能显示，所以存一份到本地。"""
+        try:
+            data = await client.download_profile_photo("me", file=bytes)
+            f = core.DATA / f"{s}.jpg"
+            f.write_bytes(data) if data else f.unlink(missing_ok=True)
+        except Exception as e:
+            log.info("存头像失败: %r", e)
+
+    async def switch(self, s):
+        """换到另一个号（或一个新的空登录文件 = 加号）。"""
+        if self.boot_task and not self.boot_task.done():
+            self.boot_task.cancel()
+            await asyncio.gather(self.boot_task, return_exceptions=True)
+        old = self.session
+        if old != s and old not in {a["s"] for a in core.accounts()}:
+            await self.drop(old)  # 刚才在加的号还没登上就切走了：那份半成品删掉
+        self.session = s
+        self.client = self.me = self.chats = self.qr = None
+        self.msgs.clear()
+        self.previews.clear()
+        if self.password and not self.password.done():
+            self.password.cancel()
+        self.start_boot()
+
+    async def drop(self, s):
+        if c := self.clients.pop(s, None):
+            await c.disconnect()
+        core.drop_session_files(s)
+
+    async def add_account(self):
+        if self.adding is None:
+            self.adding = self.session
+        await self.switch(core.new_session())
+
+    async def cancel_add(self):
+        back, self.adding = self.adding, None
+        if back:
+            await self.switch(back)
+
+    async def logout(self):
+        """退出当前这个号：Telegram 那边的登录也一起删掉。"""
+        s, client = self.session, self.client
+        if client:
+            for j in self.jobs:
+                if j.client is client and not self.tasks[j.id].done():
+                    self.tasks[j.id].cancel()
+            try:
+                done = await client.log_out()  # 成功的话它自己会断开、删登录文件
+            except Exception as e:
+                log.warning("退出登录出错: %r", e)
+                done = False
+            self.clients.pop(s, None)
+            if not done:
+                await client.disconnect()
+        core.remove_account(s)
+        rest = core.accounts()
+        await self.switch(rest[0]["s"] if rest else core.new_session())
 
     def show_qr(self, url):
         self.stage, self.qr = "qr", core.qr_data_url(url)
@@ -159,8 +245,41 @@ async def index(_):
 # ---- 登录 ----
 @routes.get("/api/state")
 async def state(_):
+    notice, app.notice = app.notice, None
     return web.json_response({"stage": app.stage, "qr": app.qr, "hint": app.hint,
-                              "error": app.error, "me": app.me})
+                              "error": app.error, "me": app.me, "notice": notice and core.tr(notice),
+                              "session": app.session, "adding": bool(app.adding),
+                              "accounts": [{**a, "photo": (core.DATA / f"{a['s']}.jpg").exists()}
+                                           for a in core.accounts()]})
+
+
+@routes.post("/api/account")
+async def account(request):
+    """切号 / 加号 / 取消加号 / 退出当前号。"""
+    b = await request.json()
+    act = b.get("action")
+    if act == "switch":
+        if b.get("s") not in {a["s"] for a in core.accounts()}:
+            raise web.HTTPNotFound()
+        await app.switch(b["s"])
+    elif act == "add":
+        await app.add_account()
+    elif act == "cancel":
+        await app.cancel_add()
+    elif act == "logout":
+        await app.logout()
+    else:
+        raise web.HTTPBadRequest()
+    return ok()
+
+
+@routes.get("/api/acc_avatar")
+async def acc_avatar(request):
+    s = request.query.get("s")
+    if s not in {a["s"] for a in core.accounts()}:  # 只认登录过的号，防止拿来读别的文件
+        raise web.HTTPNotFound()
+    f = core.DATA / f"{s}.jpg"
+    return image(f.read_bytes() if f.exists() else None)
 
 
 @routes.post("/api/password")
@@ -174,7 +293,7 @@ async def password(request):
 @routes.post("/api/retry")
 async def retry(_):
     if app.stage == "error":
-        asyncio.create_task(app.boot())
+        app.start_boot()
     return ok()
 
 
@@ -554,7 +673,7 @@ async def main():
     url = f"http://127.0.0.1:{port}/"
     log.info("界面地址 %s", url)
 
-    asyncio.create_task(app.boot())
+    app.start_boot()
     if "--no-window" not in sys.argv:
         open_window(url)
     # Edge 会把窗口转交给别的进程，没法直接等它结束。改成：页面关闭时发 /api/bye，
@@ -569,9 +688,11 @@ async def main():
     log.info("窗口已关闭，退出")
     app.cancel()
     await asyncio.sleep(0.5)
-    if app.client:
-        await app.client.disconnect()
-    await runner.cleanup()
+    try:  # 有连接卡着（窗口卡死、播放到一半）也别一直等，5 秒还没收完就直接退
+        await asyncio.wait_for(asyncio.gather(*(c.disconnect() for c in app.clients.values()), runner.cleanup()), 5)
+    except Exception as e:
+        log.warning("退出时没收拾干净: %r", e)
+    os._exit(0)
 
 
 if __name__ == "__main__":

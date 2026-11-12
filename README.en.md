@@ -29,6 +29,7 @@ Chat list on the left, message bubbles on the right — much like the app you us
 - **Dark mode** — 🌙 in the top left, follows your system setting by default
 - **Bilingual UI** — switch between English and Chinese from the top left (job logs and statuses follow too)
 - **You can send messages** — composer at the bottom: Enter to send, replies, photos and files, delete your own
+- **Multiple accounts** — click your avatar in the top left to switch or add accounts, no limit; downloads keep running on the account you switched away from
 
 The only difference: a download button in the corner of every file.
 
@@ -147,5 +148,5 @@ MIT
 
 <sub>Keywords: telegram downloader, telegram media downloader, download restricted telegram content,
 telegram protected content saver, save restricted media, telegram no forwards, telegram comments downloader,
-telegram channel downloader, telegram bulk download, telegram backup tool, telegram chat export,
+telegram channel downloader, telegram bulk download, telegram backup tool, telegram chat export, telegram multiple accounts,
 telethon, mtproto, telegram gui client, telegram scraper, 电报下载器, TG 下载器</sub>

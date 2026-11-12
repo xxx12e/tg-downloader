@@ -29,6 +29,7 @@
 - **夜间模式**，左上角 🌙 切换，跟随系统深浅色
 - **界面中英双语**，右上角一键切换（日志、下载状态也跟着切）
 - **能发消息**：底部输入框，回车发送，支持回复、发图片和文件、删除自己发的
+- **多账号**：左上角头像点开就能切号、加号，数量不限；切走的号照样在后台下载
 
 区别只有一个：每个文件角上多了个下载按钮。
 
@@ -147,5 +148,5 @@ MIT
 
 <sub>关键词：Telegram 下载器、电报下载器、TG 下载工具、telegram 批量下载、telegram 媒体下载、
 禁止保存内容下载、禁止转发、受限频道下载、telegram 评论区下载、telegram 频道备份、
-telegram 聊天记录导出、Telethon、MTProto、telegram downloader、telegram media downloader、
+telegram 聊天记录导出、telegram 多账号、TG 多开、Telethon、MTProto、telegram downloader、telegram media downloader、
 download restricted telegram content、telegram protected content saver</sub>

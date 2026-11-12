@@ -22,7 +22,7 @@ from telethon.tl.types import MessageMediaWebPage
 ROOT = Path(__file__).resolve().parent
 CONFIG = ROOT / "config.json"
 DATA = ROOT / "data"
-SESSION = DATA / "tg"
+SESSION = DATA / "tg"   # 第一个号；之后加的号是 tg2、tg3…
 DEFAULT_OUT = ROOT / "downloads"   # 下载根目录，可以在界面里改（存到 config.json 的 download_dir）
 
 # 需要你自己的 api_id / api_hash：https://my.telegram.org → API development tools
@@ -60,6 +60,7 @@ LANG = "zh"  # 由界面通过 /api/lang 设置
 EN = {
     "完成：新下载 {ok} 个，跳过已有 {skip} 个": "Done: {ok} new, {skip} already had",
     "（其中 {dup} 个是频道重复发的，没重复下）": " ({dup} were reposts, not downloaded again)",
+    "这个号已经登录过了，直接切换过去了": "That account was already logged in; switched to it",
     "，{found} 个是文件夹里本来就有的": ", {found} were already in the folder",
     "检查目标文件夹里已有的文件…": "Checking what's already in the folder…",
     "目标文件夹里已有 {n} 个文件，一样的不会重复下": "{n} files already in the folder; identical ones won't be downloaded again",
@@ -224,6 +225,53 @@ def save_config(cfg):
     CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), "utf-8")
 
 
+# ---------------- 多账号 ----------------
+# 每个号一个登录文件：data/tg.session、data/tg2.session…；号的名字、ID 记在 config.json 的 accounts 里
+
+def accounts():
+    return [a for a in (load_config().get("accounts") or []) if a.get("s")]
+
+
+def active_session():
+    return load_config().get("active") or "tg"
+
+
+def set_active(s):
+    cfg = load_config()
+    cfg["active"] = s
+    save_config(cfg)
+
+
+def save_account(s, uid, name):
+    cfg = load_config()
+    rows = [a for a in (cfg.get("accounts") or []) if a.get("s") != s]
+    cfg["accounts"] = rows + [{"s": s, "id": uid, "name": name}]
+    save_config(cfg)
+
+
+def remove_account(s):
+    cfg = load_config()
+    cfg["accounts"] = [a for a in (cfg.get("accounts") or []) if a.get("s") != s]
+    save_config(cfg)
+    drop_session_files(s)
+
+
+def drop_session_files(s):
+    for p in (DATA / f"{s}.session", DATA / f"{s}.session-journal", DATA / f"{s}.jpg"):
+        try:
+            p.unlink(missing_ok=True)
+        except OSError as e:
+            log.warning("删不掉 %s: %r", p.name, e)
+
+
+def new_session():
+    used = {a["s"] for a in accounts()}
+    for i in range(1, 1000):
+        s = "tg" if i == 1 else f"tg{i}"
+        if s not in used and not (DATA / f"{s}.session").exists():
+            return s
+
+
 def port_open(port):
     with socket.socket() as s:
         s.settimeout(0.5)
@@ -251,7 +299,7 @@ def proxy_candidates(cfg):
     return list(dict.fromkeys(c for c in cands if c is not None))
 
 
-async def connect(cfg):
+async def connect(cfg, session="tg"):
     api_id, api_hash = cfg.get("api_id"), cfg.get("api_hash")
     if not api_id or not api_hash:
         if not CONFIG.exists():
@@ -261,7 +309,7 @@ async def connect(cfg):
     for proxy in proxy_candidates(cfg):
         log.info("连接 Telegram（%s）", proxy or "直连")
         client = TelegramClient(
-            str(SESSION), api_id, api_hash, proxy=parse_proxy(proxy),
+            str(DATA / session), api_id, api_hash, proxy=parse_proxy(proxy),
             flood_sleep_threshold=900, connection_retries=5, retry_delay=2, request_retries=10, timeout=30,
         )
         try:
@@ -270,6 +318,9 @@ async def connect(cfg):
                 cfg["proxy"] = proxy
                 save_config(cfg)
             return client
+        except asyncio.CancelledError:  # 正在连的时候切走了：把登录文件放开
+            await client.disconnect()
+            raise
         except Exception as e:
             log.warning("连接失败: %r", e)
             await client.disconnect()

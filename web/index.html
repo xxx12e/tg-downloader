@@ -80,6 +80,11 @@
   .ava.big { width: 54px; height: 54px; font-size: 20px; }
   .ava.mid { width: 42px; height: 42px; font-size: 16px; }
   .ava.sm { width: 34px; height: 34px; font-size: 13px; }
+  .ava.xs { width: 30px; height: 30px; font-size: 13px; }
+  #menu .accrow { display: flex; align-items: center; gap: 10px; min-width: 200px; }
+  #menu .accrow .grow { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #menu .accplus { width: 30px; text-align: center; font-size: 20px; color: var(--blue); }
+  #menu .accout { color: var(--red); }
 
   /* 聊天区 */
   #chat { flex: 1; display: flex; flex-direction: column; min-width: 0; position: relative; background: var(--chat-bg); }
@@ -321,6 +326,7 @@
       <p class="err" id="err"></p>
       <button class="btn fill" onclick="api('/api/retry','POST')" data-t="重试">重试</button>
     </div>
+    <button id="l-cancel" class="btn hidden" style="margin-top:10px" onclick="accAction('cancel')" data-t="取消，回到原来的号">取消，回到原来的号</button>
   </div>
 </div>
 
@@ -328,6 +334,7 @@
 <div id="app" class="hidden">
   <aside id="side">
     <div class="side-top">
+      <button class="icon" id="accBtn" data-t-title="切换账号" title="切换账号" onclick="accMenu(event)">👤</button>
       <button class="icon" data-t-title="打开下载文件夹" title="打开下载文件夹" onclick="openPath('')">📁</button>
       <button class="icon" id="themeBtn" onclick="setTheme(THEME === 'dark' ? 'light' : 'dark')" title="夜间模式 / Dark mode">🌙</button>
       <button class="icon" id="langBtn" onclick="setLang(LANG === 'zh' ? 'en' : 'zh')" title="中文 / English">EN</button>
@@ -387,6 +394,7 @@ const I18N = {
   "正在连接 Telegram…": "Connecting to Telegram…", "扫码登录": "Scan to log in", "二维码": "QR code",
   "手机打开 Telegram →": "On your phone, open Telegram →", "设置": "Settings", "设备": "Devices",
   "连接桌面设备": "Link Desktop Device", "扫上面的码，只需要登录这一次": "Scan the code above — you only need to do this once",
+  "取消，回到原来的号": "Cancel and go back", "切换账号": "Switch account", "添加账号": "Add account", "退出当前账号": "Log out of this account",
   "两步验证": "Two-step verification", "密码": "Password", "确定": "OK", "出问题了": "Something went wrong", "重试": "Retry",
   // 左栏
   "搜索": "Search", "打开下载文件夹": "Open downloads folder", "下载管理": "Downloads",
@@ -528,8 +536,12 @@ async function pollState() {
     if (s.stage === "qr" && $("qr").src !== s.qr) $("qr").src = s.qr;
     if (s.stage === "password") { $("pw-hint").textContent = s.hint; $("pw").focus(); }
     if (s.stage === "error") $("err").textContent = s.error;
+    $("l-cancel").classList.toggle("hidden", !s.adding);
+    ACC = { list: s.accounts || [], s: s.session };
+    if (s.notice) toast(s.notice);
     if (s.stage === "ready" && !ready) {
       ready = true;
+      renderAccBtn();
       $("login").classList.add("hidden");
       $("app").classList.remove("hidden");
       api("/api/lang", "POST", { lang: LANG }).catch(() => {});
@@ -540,6 +552,35 @@ async function pollState() {
     }
   } catch (e) {}
   setTimeout(pollState, 800);
+}
+/* ================= 多账号 ================= */
+let ACC = { list: [], s: null };
+function accAva(a, cls) {
+  const ini = esc([...(a.name || "?").trim()][0] || "?").toUpperCase();
+  const img = a.photo ? `<img src="/api/acc_avatar?t=${TOKEN}&s=${encodeURIComponent(a.s)}&v=${Date.now() / 6e4 | 0}" onerror="this.remove()">` : "";
+  return `<div class="ava ${cls}" style="background:${COLORS[Math.abs(a.id || 0) % 7]}">${ini}${img}</div>`;
+}
+function renderAccBtn() {
+  const a = ACC.list.find(x => x.s === ACC.s);
+  if (a) { $("accBtn").innerHTML = accAva(a, "xs"); $("accBtn").title = a.name + " · " + t("切换账号"); }
+}
+function accMenu(e) {
+  e.stopPropagation();
+  const r = $("accBtn").getBoundingClientRect();
+  const items = ACC.list.map(a => [
+    `<span class="accrow">${accAva(a, "xs")}<span class="grow">${esc(a.name)}</span>${a.s === ACC.s ? "✓" : ""}</span>`,
+    () => a.s !== ACC.s && accAction("switch", a.s)]);
+  items.push([`<span class="accrow"><span class="accplus">＋</span>${t("添加账号")}</span>`, () => accAction("add")]);
+  items.push([`<span class="accrow accout">${t("退出当前账号")}</span>`, () => {
+    const a = ACC.list.find(x => x.s === ACC.s), n = a ? a.name : "";
+    if (confirm(LANG === "en" ? `Log out of ${n}? This removes the login from this computer (and from Telegram's device list). Downloads in progress for this account will stop.`
+                              : `确定退出 ${n}？这台电脑上的登录会删掉（Telegram 设备列表里也会消失），这个号正在下的任务会停止。`)) accAction("logout");
+  }]);
+  showMenu(r.left, r.bottom + 4, items);
+}
+async function accAction(action, s) {
+  try { await api("/api/account", "POST", { action, s }); } catch (e) { return toast(e.message); }
+  location.reload();
 }
 async function sendPassword(e) {
   e.preventDefault();
