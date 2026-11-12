@@ -175,6 +175,16 @@
   .composer .send { width: 40px; height: 40px; border-radius: 50%; background: var(--blue); color: #fff; font-size: 17px; flex: none; display: flex; align-items: center; justify-content: center; }
   .composer .send:hover { background: var(--blue-d); color: #fff; }
   .composer .send:disabled { background: #c7d4e0; cursor: default; }
+  .composer .qbox { display: flex; flex-direction: column; gap: 4px; max-height: 170px; overflow: auto; }
+  .composer .qh { font-size: 12px; color: var(--sub); display: flex; justify-content: space-between; }
+  .composer .qrow { display: flex; gap: 8px; align-items: center; font-size: 13px; background: var(--hover); border-radius: 8px; padding: 4px 8px; }
+  .composer .qrow .qt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .composer .qrow .qs { color: var(--sub); flex: none; font-variant-numeric: tabular-nums; }
+  .composer .qrow.sent .qs { color: #4fae4e; }
+  .composer .qrow.fail .qs { color: var(--red); }
+  .composer .qrow b { cursor: pointer; color: var(--sub); font-weight: normal; }
+  .composer .qrow.sent { opacity: .6; }
+  #qBtn.on { background: rgba(51,144,236,.15); color: var(--blue); }
   .composer .nosend { color: var(--sub); font-size: 13px; text-align: center; padding: 6px; }
   .composer .files { display: flex; flex-wrap: wrap; gap: 6px; }
   .composer .files .f { background: var(--hover); border-radius: 8px; padding: 3px 8px; font-size: 13px; display: flex; align-items: center; gap: 6px; max-width: 240px; }
@@ -394,7 +404,14 @@ const I18N = {
   "正在连接 Telegram…": "Connecting to Telegram…", "扫码登录": "Scan to log in", "二维码": "QR code",
   "手机打开 Telegram →": "On your phone, open Telegram →", "设置": "Settings", "设备": "Devices",
   "连接桌面设备": "Link Desktop Device", "扫上面的码，只需要登录这一次": "Scan the code above — you only need to do this once",
-  "取消，回到原来的号": "Cancel and go back", "切换账号": "Switch account", "添加账号": "Add account", "退出当前账号": "Log out of this account",
+  "取消，回到原来的号": "Cancel and go back",
+  "连续发送：一次写好几条，慢速模式到点自动一条条发": "Queued sending: write several messages, each goes out when slow mode allows",
+  "连续发送已打开：回车 = 排进队列，到点自动发": "Queued sending on: Enter adds to the queue, sent automatically when allowed",
+  "连续发送已关闭": "Queued sending off", "连续发送：写一条按回车排进队列，到点自动发": "Queued: type a message, Enter to queue it",
+  "发送中…": "Sending…", "已发送": "Sent", "失败": "Failed", "排队中": "Queued", "连续发送": "Queue", "还剩": "left",
+  "取消这条": "Remove", "自动保存回复我的消息": "Auto-save replies to me", "打开回复记录": "Open saved replies",
+  "别人回复你的消息会自动存到 downloads/回复我的": "Replies to your messages are saved to downloads/回复我的",
+  "已关闭自动保存回复": "Auto-save replies off", "还没有人回复过你": "No replies saved yet", "切换账号": "Switch account", "添加账号": "Add account", "退出当前账号": "Log out of this account",
   "两步验证": "Two-step verification", "密码": "Password", "确定": "OK", "出问题了": "Something went wrong", "重试": "Retry",
   // 左栏
   "搜索": "Search", "打开下载文件夹": "Open downloads folder", "下载管理": "Downloads",
@@ -537,7 +554,7 @@ async function pollState() {
     if (s.stage === "password") { $("pw-hint").textContent = s.hint; $("pw").focus(); }
     if (s.stage === "error") $("err").textContent = s.error;
     $("l-cancel").classList.toggle("hidden", !s.adding);
-    ACC = { list: s.accounts || [], s: s.session };
+    ACC = { list: s.accounts || [], s: s.session, save: s.save_replies, repliesDir: s.replies_dir };
     if (s.notice) toast(s.notice);
     if (s.stage === "ready" && !ready) {
       ready = true;
@@ -571,6 +588,13 @@ function accMenu(e) {
     `<span class="accrow">${accAva(a, "xs")}<span class="grow">${esc(a.name)}</span>${a.s === ACC.s ? "✓" : ""}</span>`,
     () => a.s !== ACC.s && accAction("switch", a.s)]);
   items.push([`<span class="accrow"><span class="accplus">＋</span>${t("添加账号")}</span>`, () => accAction("add")]);
+  items.push([`<span class="accrow"><span class="accplus">${ACC.save ? "✓" : ""}</span>${t("自动保存回复我的消息")}</span>`, async () => {
+    try { await api("/api/settings", "POST", { save_replies: !ACC.save }); ACC.save = !ACC.save; }
+    catch (e) { return toast(e.message); }
+    toast(ACC.save ? t("别人回复你的消息会自动存到 downloads/回复我的") : t("已关闭自动保存回复"));
+  }]);
+  items.push([`<span class="accrow"><span class="accplus">📂</span>${t("打开回复记录")}</span>`, () =>
+    api("/api/open", "POST", { path: ACC.repliesDir }).catch(() => toast(t("还没有人回复过你")))]);
   items.push([`<span class="accrow accout">${t("退出当前账号")}</span>`, () => {
     const a = ACC.list.find(x => x.s === ACC.s), n = a ? a.name : "";
     if (confirm(LANG === "en" ? `Log out of ${n}? This removes the login from this computer (and from Telegram's device list). Downloads in progress for this account will stop.`
@@ -1213,9 +1237,11 @@ function composerHtml(v) {
   return `<div class="composer">
     <div class="reply hidden" id="replyBar"><div class="rt"><b id="replyWho"></b><span id="replyTxt"></span></div>
       <button class="icon" style="width:28px;height:28px" onclick="setReply(null)">✕</button></div>
+    <div class="qbox hidden" id="qBox"></div>
     <div class="files hidden" id="outFiles"></div>
     <div class="box">
       <button class="icon" onclick="$('fileIn').click()" title="${t("发送文件")}">📎</button>
+      <button class="icon" id="qBtn" onclick="toggleQ()" title="${t("连续发送：一次写好几条，慢速模式到点自动一条条发")}">⏱</button>
       <textarea id="msgIn" rows="1" placeholder="${t("写点什么…")}"></textarea>
       <button class="send" id="sendBtn" onclick="doSend()" title="${t("发送")}">➤</button>
     </div>
@@ -1224,6 +1250,7 @@ function composerHtml(v) {
 }
 function bindComposer() {
   const ta = $("msgIn"); if (!ta) return;
+  renderQBtn(); pollQueue();
   ta.oninput = () => { ta.style.height = "auto"; ta.style.height = Math.min(140, ta.scrollHeight) + "px"; };
   ta.onkeydown = e => {               // 回车发送，Shift+回车换行
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); doSend(); }
@@ -1255,7 +1282,54 @@ function renderOutbox() {
     `<div class="f"><span title="${esc(f.name)}">${esc(f.name)}</span><b onclick="dropFile(${i})">✕</b></div>`).join("");
 }
 function dropFile(i) { outbox.splice(i, 1); renderOutbox(); }
+/* 连续发送：写一条回车排一条，后台按慢速模式的时间一条条发 */
+let qMode = localStorage.getItem("tgdl.qmode") === "1", qTimer = null, qSent = new Set();
+function toggleQ() {
+  qMode = !qMode; localStorage.setItem("tgdl.qmode", qMode ? "1" : "0"); renderQBtn();
+  toast(qMode ? t("连续发送已打开：回车 = 排进队列，到点自动发") : t("连续发送已关闭"));
+  $("msgIn") && $("msgIn").focus();
+}
+function renderQBtn() {
+  const b = $("qBtn"), ta = $("msgIn"); if (!b || !ta) return;
+  b.classList.toggle("on", qMode);
+  ta.placeholder = qMode ? t("连续发送：写一条按回车排进队列，到点自动发") : t("写点什么…");
+}
+function mmss(s) { s = Math.ceil(s); return s >= 60 ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : `${s}s`; }
+async function queueSend() {
+  const ta = $("msgIn"), text = ta.value.trim(), files = outbox;
+  if (!text && !files.length) return;
+  const v = cur, fd = new FormData();
+  fd.append("chat", v.chat); fd.append("post", v.post || 0); fd.append("text", text);
+  if (replyTo) fd.append("reply_to", replyTo.ids[0]);
+  files.forEach(f => fd.append("file", f));
+  const r = await fetch("/api/queue", { method: "POST", headers: { "X-Token": TOKEN }, body: fd });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) return toast(d.error || r.statusText);
+  ta.value = ""; ta.style.height = "auto"; outbox = []; renderOutbox(); setReply(null); ta.focus();
+  pollQueue();
+}
+async function pollQueue() {
+  clearTimeout(qTimer);
+  const v = cur, box = $("qBox"); if (!v || !box) return;
+  let rows = [];
+  try { rows = await api(`/api/queue?chat=${v.chat}&post=${v.post || 0}`); } catch (e) {}
+  if (v !== cur || !$("qBox")) return;
+  const live = rows.filter(x => ["queued", "wait", "sending"].includes(x.status));
+  box.classList.toggle("hidden", !rows.length);
+  const st = x => x.status === "wait" ? "⏱ " + mmss(x.left || 0) : x.status === "sending" ? t("发送中…")
+    : x.status === "sent" ? "✓ " + t("已发送") : x.status === "fail" ? "✕ " + t("失败") : t("排队中");
+  box.innerHTML = rows.length ? `<div class="qh"><span>${t("连续发送")} · ${t("还剩")} ${live.length}</span></div>` + rows.map(x =>
+    `<div class="qrow ${x.status}" title="${esc(x.error || x.text)}"><span class="qt">${x.files.length ? "📎" + x.files.length + " " : ""}${esc(x.text || x.files.join(", "))}</span>
+      <span class="qs">${st(x)}</span>${["queued", "wait"].includes(x.status) ? `<b onclick="queueDel(${x.id})" title="${t("取消这条")}">✕</b>` : ""}</div>`).join("") : "";
+  if (rows.some(x => x.status === "sent" && !qSent.has(x.id))) {
+    rows.forEach(x => x.status === "sent" && qSent.add(x.id));
+    refreshNewest().catch(() => {});
+  }
+  if (live.length) qTimer = setTimeout(pollQueue, 1000);
+}
+async function queueDel(id) { await api("/api/queue/del", "POST", { id }).catch(e => toast(e.message)); pollQueue(); }
 async function doSend() {
+  if (qMode) return queueSend();
   const ta = $("msgIn"); if (!ta) return;
   const text = ta.value.trim(), files = outbox;
   if (!text && !files.length) return;

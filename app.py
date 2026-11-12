@@ -15,7 +15,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from aiohttp import web
-from telethon import errors, utils
+from telethon import errors, events, utils
 
 import core
 
@@ -56,6 +56,10 @@ class App:
         self.msgs = {}  # (chat, post, id) -> 浏览时拿到的消息，下载/预览直接用
         self.previews = {}  # 缩略图、头像缓存
         self.preview_sem = asyncio.Semaphore(12)  # 缩略图/头像同时拉几个
+        self.outq = []  # 连续发送：排着队等慢速模式到点的消息
+        self.outq_tasks = {}  # (号, 聊天, 帖子) -> 发送任务
+        self.outq_ids = 0
+        self.hooked = set()  # 已经挂上“回复我的”监听的客户端
 
     # ---- 登录 ----
     def start_boot(self):
@@ -88,6 +92,7 @@ class App:
             self.stage = "ready"
             log.info("已登录：%s（%s）", self.me, s)
             asyncio.create_task(self.save_avatar(s, client))
+            self.hook_replies(client, self.me)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -96,6 +101,61 @@ class App:
             if client:
                 self.clients.pop(s, None)
                 await client.disconnect()
+
+    # ---- 别人回复我的消息：自动存到本地 ----
+    def hook_replies(self, client, me_name):
+        if id(client) in self.hooked:
+            return
+        self.hooked.add(id(client))
+
+        async def on_msg(event):
+            m = event.message
+            if not m.is_reply or not core.load_config().get("save_replies", True):
+                return
+            if not m.is_private and not m.mentioned:  # 群里回复我的，Telegram 会标上 mentioned，省得每条都去查
+                return
+            try:
+                mine = await m.get_reply_message()
+                if mine and mine.out:
+                    await core.save_reply(client, m, mine, me_name)
+            except Exception as e:
+                log.warning("存回复失败: %r", e)
+
+        client.add_event_handler(on_msg, events.NewMessage(incoming=True))
+
+    # ---- 连续发送：慢速模式的群里一次写好几条，到点自动一条条发 ----
+    def queue_add(self, chat, post, text, reply_to, files):
+        self.outq_ids += 1
+        key = (self.session, chat, post)
+        self.outq.append({"id": self.outq_ids, "key": key, "chat": chat, "post": post, "text": text,
+                          "reply_to": reply_to, "files": files, "status": "queued", "eta": None, "error": None})
+        if key not in self.outq_tasks or self.outq_tasks[key].done():
+            self.outq_tasks[key] = asyncio.create_task(self.queue_run(key, self.client))
+
+    async def queue_run(self, key, client):
+        _, chat, post = key
+        while it := next((x for x in self.outq if x["key"] == key and x["status"] in ("queued", "wait")), None):
+            try:
+                wait = await core.slowmode_wait(client, chat, post)
+                if wait > 0:
+                    it["status"], it["eta"] = "wait", time.time() + wait
+                    await asyncio.sleep(wait + 1)
+                    continue  # 等的时候可能被删了，重新挑一条
+                it["status"], it["eta"] = "sending", None
+                await core.send(client, chat, text=it["text"], reply_to=it["reply_to"],
+                                comment_to=post or None, files=it["files"])
+                it["status"], it["files"] = "sent", None
+                if self.client is client:
+                    self.chats = None
+            except (errors.SlowModeWaitError, errors.FloodWaitError) as e:
+                it["status"], it["eta"] = "wait", time.time() + e.seconds
+                await asyncio.sleep(e.seconds + 1)
+            except Exception as e:
+                log.exception("排队发送失败")
+                it["status"], it["error"], it["files"] = "fail", str(e), None
+        # 发完的留 10 分钟给界面看，之后清掉
+        cut = time.time() - 600
+        self.outq = [x for x in self.outq if x["status"] not in ("sent", "fail") or x.setdefault("done_at", time.time()) > cut]
 
     async def save_avatar(self, s, client):
         """切号菜单里要显示每个号的头像，没连上的号也要能显示，所以存一份到本地。"""
@@ -249,6 +309,8 @@ async def state(_):
     return web.json_response({"stage": app.stage, "qr": app.qr, "hint": app.hint,
                               "error": app.error, "me": app.me, "notice": notice and core.tr(notice),
                               "session": app.session, "adding": bool(app.adding),
+                              "save_replies": core.load_config().get("save_replies", True),
+                              "replies_dir": str(core.DEFAULT_OUT / "回复我的"),
                               "accounts": [{**a, "photo": (core.DATA / f"{a['s']}.jpg").exists()}
                                            for a in core.accounts()]})
 
@@ -529,6 +591,10 @@ async def send_msg(request):
             name = getattr(up, "filename", None)
         else:
             body, blob, name = await request.json(), None, None
+        wait = await core.slowmode_wait(app.client, int(body["chat"]), int(body.get("post") or 0))
+        if wait > 0:  # 不提前问的话 Telethon 会一声不吭地卡着等，界面看着像死了
+            return web.json_response({"error": core.tr("慢速模式：还要等 {t} 才能发。打开 ⏱ 连续发送，到点会自动发",
+                                                       t=core.mmss(wait)), "slow": wait}, status=429)
         msg = await core.send(
             app.client, int(body["chat"]), text=body.get("text") or "",
             reply_to=int(body.get("reply_to") or 0) or None,
@@ -541,6 +607,51 @@ async def send_msg(request):
         return web.json_response({"error": core.tr("发不出去：{e}", e=e)}, status=400)
     app.chats = None  # 列表里的“最后一条消息”变了
     return ok(id=msg.id)
+
+
+@routes.post("/api/queue")
+async def queue_add(request):
+    """连续发送：把一条（文字 + 可选的几个文件）排进队列。"""
+    if app.stage != "ready":
+        return web.json_response({"error": core.tr("还没登录")}, status=400)
+    if request.content_type.startswith("multipart/"):
+        data = await request.post()
+        files = [(f.filename, f.file.read()) for f in data.getall("file", []) if hasattr(f, "file")]
+        body = {k: data.get(k) for k in ("chat", "post", "text", "reply_to")}
+    else:
+        body, files = await request.json(), []
+    text = (body.get("text") or "").strip()
+    if not text and not files:
+        return web.json_response({"error": core.tr("消息是空的")}, status=400)
+    app.queue_add(int(body["chat"]), int(body.get("post") or 0), text, int(body.get("reply_to") or 0) or None, files)
+    return ok()
+
+
+@routes.get("/api/queue")
+async def queue_list(request):
+    key = (app.session, int(request.query["chat"]), int(request.query.get("post") or 0))
+    now = time.time()
+    return web.json_response([{
+        "id": x["id"], "text": x["text"], "files": [n for n, _ in (x["files"] or [])], "status": x["status"],
+        "left": max(0, x["eta"] - now) if x["eta"] else None, "error": x["error"],
+    } for x in app.outq if x["key"] == key])
+
+
+@routes.post("/api/queue/del")
+async def queue_del(request):
+    i = (await request.json()).get("id")
+    app.outq = [x for x in app.outq if not (x["id"] == i and x["status"] != "sending")]
+    return ok()
+
+
+@routes.post("/api/settings")
+async def settings(request):
+    b = await request.json()
+    cfg = core.load_config()
+    if "save_replies" in b:
+        cfg["save_replies"] = bool(b["save_replies"])
+    core.save_config(cfg)
+    return ok()
 
 
 @routes.post("/api/delete")
@@ -657,7 +768,7 @@ async def main():
         open_window(f"http://127.0.0.1:{port}/")
         return
 
-    webapp = web.Application(middlewares=[guard])
+    webapp = web.Application(middlewares=[guard], client_max_size=2 * 1024 ** 3)  # 默认只收 1MB，发文件会被拒
     webapp.add_routes(routes)
     runner = web.AppRunner(webapp, access_log=None)
     await runner.setup()

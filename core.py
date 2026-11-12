@@ -61,6 +61,8 @@ EN = {
     "完成：新下载 {ok} 个，跳过已有 {skip} 个": "Done: {ok} new, {skip} already had",
     "（其中 {dup} 个是频道重复发的，没重复下）": " ({dup} were reposts, not downloaded again)",
     "这个号已经登录过了，直接切换过去了": "That account was already logged in; switched to it",
+    "{m} 分 {s} 秒": "{m}m {s}s", "{s} 秒": "{s}s",
+    "慢速模式：还要等 {t} 才能发。打开 ⏱ 连续发送，到点会自动发": "Slow mode: wait {t} before sending. Turn on ⏱ queued sending and it'll go out automatically",
     "，{found} 个是文件夹里本来就有的": ", {found} were already in the folder",
     "检查目标文件夹里已有的文件…": "Checking what's already in the folder…",
     "目标文件夹里已有 {n} 个文件，一样的不会重复下": "{n} files already in the folder; identical ones won't be downloaded again",
@@ -310,7 +312,7 @@ async def connect(cfg, session="tg"):
         log.info("连接 Telegram（%s）", proxy or "直连")
         client = TelegramClient(
             str(DATA / session), api_id, api_hash, proxy=parse_proxy(proxy),
-            flood_sleep_threshold=900, connection_retries=5, retry_delay=2, request_retries=10, timeout=30,
+            flood_sleep_threshold=900, catch_up=True, connection_retries=5, retry_delay=2, request_retries=10, timeout=30,
         )
         try:
             await asyncio.wait_for(client.connect(), 25)
@@ -840,19 +842,86 @@ async def join_invite(client, invite):
     return {"chat": chat_info(chat)} if chat else {"error": tr("已加入，刷新一下左边列表就能看到")}
 
 
-async def send(client, chat, text=None, reply_to=None, comment_to=None, file=None, name=None):
-    """发消息。comment_to 不为空 = 发到某条帖子的评论区。"""
+async def send(client, chat, text=None, reply_to=None, comment_to=None, file=None, name=None, files=None):
+    """发消息。comment_to 不为空 = 发到某条帖子的评论区。files=[(名字, 内容)] 多个文件合成一组（相册）发。"""
     entity = await resolve(client, chat)
     kw = dict(reply_to=reply_to or None, comment_to=comment_to or None)
     if file is not None:
-        f = io.BytesIO(file)
-        f.name = name or "file"
-        msg = await client.send_file(entity, f, caption=(text or None), force_document=False, **kw)
+        files = [(name, file)]
+    if files:
+        objs = []
+        for n, data in files:
+            f = io.BytesIO(data)
+            f.name = n or "file"
+            objs.append(f)
+        msg = await client.send_file(entity, objs if len(objs) > 1 else objs[0],
+                                     caption=(text or None), force_document=False, **kw)
     else:
         if not (text or "").strip():
             raise ValueError(tr("消息是空的"))
         msg = await client.send_message(entity, text, link_preview=True, **kw)
     return msg if not isinstance(msg, list) else msg[0]
+
+
+async def slowmode_wait(client, chat, post=None):
+    """群开了慢速模式时，还要等几秒才能发下一条。0 = 现在就能发。发到评论区看的是讨论组。"""
+    e = await resolve(client, chat)
+    for _ in range(2):
+        if not isinstance(e, types.Channel) or e.creator or e.admin_rights:
+            return 0  # 只有超级群有慢速模式；群主和管理员不受限
+        full = (await client(functions.channels.GetFullChannelRequest(e))).full_chat
+        if post and e.broadcast:
+            if not full.linked_chat_id:
+                return 0
+            e, post = await client.get_entity(types.PeerChannel(full.linked_chat_id)), None
+            continue
+        nd = full.slowmode_next_send_date
+        return max(0, (nd - datetime.now(timezone.utc)).total_seconds()) if nd else 0
+    return 0
+
+
+def mmss(sec):
+    sec = int(sec + 0.999)
+    return tr("{m} 分 {s} 秒", m=sec // 60, s=sec % 60) if sec >= 60 else tr("{s} 秒", s=sec)
+
+
+# ---------------- 回复我的消息：自动存下来 ----------------
+REPLY_MAX = 200 * 1024 * 1024  # 回复里的文件超过这么大就只记一笔，不自动下
+
+
+async def save_reply(client, msg, mine, me_name):
+    """别人回复了我的消息：文字追加到记录里，图片/文件存一份。对方之后删了也还在。"""
+    chat = await msg.get_chat()
+    folder = DEFAULT_OUT / "回复我的" / safe(me_name or "me") / safe(
+        f"{utils.get_display_name(chat) or chat.id}_{chat.id}")
+    folder.mkdir(parents=True, exist_ok=True)
+    kind = kind_of(msg)
+    fname = file_name(msg, kind) if kind else None
+    saved = None
+    if kind:
+        size = (msg.file.size if msg.file else 0) or 0
+        if size <= REPLY_MAX:
+            path = folder / fname
+            if not path.exists():
+                if have := have_file(file_id(msg)):
+                    shutil.copy2(have, path)
+                else:
+                    tmp = path.with_name(path.name + ".part")
+                    if await download_file(client, msg, tmp, lambda *a: None) is not None:
+                        os.replace(tmp, path)
+            if path.exists():
+                note_file(file_id(msg), path)
+                saved = path
+    sender = await msg.get_sender()
+    who = utils.get_display_name(sender) if sender else (msg.post_author or "匿名")
+    quote = (mine.message or (KINDS[kind_of(mine)] if kind_of(mine) else "")).strip().replace("\n", " ")[:60]
+    attach = f"  〔{KINDS[kind]}: {fname}{'' if saved else '（太大，没自动存）'}〕" if kind else ""
+    line = (f"[{msg.date.astimezone():%Y-%m-%d %H:%M:%S}] {who} 回复了你「{quote}」：\n"
+            f"    {(msg.message or '').strip()}{attach}\n"
+            + (f"    https://t.me/c/{chat.id}/{msg.id}" if isinstance(chat, types.Channel) else "") + f"\n\n")
+    with open(folder / "回复记录.txt", "a", encoding="utf-8") as f:
+        f.write(line)
+    log.info("存了一条回复：%s / %s", folder.name, msg.id)
 
 
 async def delete_msg(client, chat, msg_id, both=True):

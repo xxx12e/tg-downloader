@@ -30,6 +30,8 @@ Chat list on the left, message bubbles on the right — much like the app you us
 - **Bilingual UI** — switch between English and Chinese from the top left (job logs and statuses follow too)
 - **You can send messages** — composer at the bottom: Enter to send, replies, photos and files, delete your own
 - **Multiple accounts** — click your avatar in the top left to switch or add accounts, no limit; downloads keep running on the account you switched away from
+- **Queued sending** — group in slow mode? Hit ⏱, write several messages, and they go out one by one as soon as each is allowed
+- **Auto-save replies to you** — text, photos and files people reply to you with are saved locally, even if they delete them later
 
 The only difference: a download button in the corner of every file.
 
@@ -148,5 +150,5 @@ MIT
 
 <sub>Keywords: telegram downloader, telegram media downloader, download restricted telegram content,
 telegram protected content saver, save restricted media, telegram no forwards, telegram comments downloader,
-telegram channel downloader, telegram bulk download, telegram backup tool, telegram chat export, telegram multiple accounts,
+telegram channel downloader, telegram bulk download, telegram backup tool, telegram chat export, telegram multiple accounts, telegram slow mode,
 telethon, mtproto, telegram gui client, telegram scraper, 电报下载器, TG 下载器</sub>
