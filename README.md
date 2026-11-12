@@ -11,6 +11,17 @@
 
 ---
 
+## 亮点
+
+- 📥 **评论区、禁止保存的频道都能下**，比常规下载最高快 10 倍
+- 👀 **先预览再下载**：图片、视频、音乐、PDF 点开就看，视频边下边播
+- 🧹 **不重复下**：选的文件夹里已经有的文件直接跳过，改过名、挪过位置、用官方客户端下的都认得出来
+- 👥 **多账号**：数量不限，左上角一点就切，切走的号照样在后台下载
+- ⏱ **慢速模式自动排队**：一次写好几条，到点自动一条条发，不用盯着倒计时
+- 💾 **回复自动存档**：别人回复你的文字、图片、文件自动存到本地，对方删了也还在
+- 📍 **回到原消息**：收藏夹里转存的、下载管理里的、硬盘上下载好的文件，一键跳回它原来那条消息
+- 🔗 **右键在原版 Telegram 里打开**，跟官方客户端无缝来回
+
 ## 为什么用它
 
 市面上的 Telegram 下载工具大多只能命令行操作，看不见内容，只能先全下回来再慢慢筛；而且几乎都漏掉评论区 —— 可很多频道真正的资源，恰恰就发在评论里。
@@ -152,5 +163,5 @@ MIT
 
 <sub>关键词：Telegram 下载器、电报下载器、TG 下载工具、telegram 批量下载、telegram 媒体下载、
 禁止保存内容下载、禁止转发、受限频道下载、telegram 评论区下载、telegram 频道备份、
-telegram 聊天记录导出、telegram 多账号、TG 多开、telegram 慢速模式、Telethon、MTProto、telegram downloader、telegram media downloader、
+telegram 聊天记录导出、telegram 多账号、TG 多开、telegram 慢速模式、慢速模式自动发送、telegram 回复存档、收藏夹找原消息、telegram 去重下载、Telethon、MTProto、telegram downloader、telegram media downloader、
 download restricted telegram content、telegram protected content saver</sub>
