@@ -405,6 +405,8 @@ const I18N = {
   "手机打开 Telegram →": "On your phone, open Telegram →", "设置": "Settings", "设备": "Devices",
   "连接桌面设备": "Link Desktop Device", "扫上面的码，只需要登录这一次": "Scan the code above — you only need to do this once",
   "取消，回到原来的号": "Cancel and go back",
+  "在原版 Telegram 里打开": "Open in Telegram app", "跳到转发来源": "Go to original post", "复制消息链接": "Copy message link",
+  "没装官方客户端，用浏览器打开了": "Telegram app not found, opened in browser", "已在 Telegram 中打开": "Opened in Telegram",
   "连续发送：一次写好几条，慢速模式到点自动一条条发": "Queued sending: write several messages, each goes out when slow mode allows",
   "连续发送已打开：回车 = 排进队列，到点自动发": "Queued sending on: Enter adds to the queue, sent automatically when allowed",
   "连续发送已关闭": "Queued sending off", "连续发送：写一条按回车排进队列，到点自动发": "Queued: type a message, Enter to queue it",
@@ -1060,6 +1062,12 @@ function onMsgMenu(e) {
   }
   if (it.media.length > 1) items.push([LANG === "en" ? `Download all ${it.media.length} files here` : `下载这条的全部 ${it.media.length} 个文件`, () => download(it.media, it)]);
   if (it !== cur.postItem) items.push([t(cur.selecting ? "选中 / 取消选中" : "选择"), () => { if (!cur.selecting) toggleSelect(); toggleSel(it); }]);
+  const ref = { chat: cur.chat, post: cur.post || 0, id: it === cur.postItem ? cur.post : it.ids[0] };
+  items.push([t("在原版 Telegram 里打开"), () => api("/api/open_tg", "POST", ref)
+    .then(r => toast(t(r.web ? "没装官方客户端，用浏览器打开了" : "已在 Telegram 中打开"))).catch(e => toast(e.message))]);
+  if (it.fwd_link) items.push([t("跳到转发来源"), () => openLink(it.fwd_link)]);
+  items.push([t("复制消息链接"), () => api("/api/open_tg", "POST", { ...ref, copy: 1 })
+    .then(r => navigator.clipboard.writeText(r.link)).then(() => toast(t("已复制"))).catch(e => toast(e.message))]);
   if (it.text) items.push([t("复制文字"), () => navigator.clipboard.writeText(it.text).then(() => toast(t("已复制")))]);
   if ($("msgIn") && it !== cur.postItem) items.push([t("回复"), () => setReply(it)]);
   if (it.out) items.push([t("删除"), async () => {

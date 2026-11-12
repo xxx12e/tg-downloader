@@ -61,6 +61,9 @@ EN = {
     "完成：新下载 {ok} 个，跳过已有 {skip} 个": "Done: {ok} new, {skip} already had",
     "（其中 {dup} 个是频道重复发的，没重复下）": " ({dup} were reposts, not downloaded again)",
     "这个号已经登录过了，直接切换过去了": "That account was already logged in; switched to it",
+    "这个聊天没有公开链接": "This chat has no shareable link",
+    "这种小群在官方客户端里没法直接定位到消息": "Telegram can't link to messages in this kind of small group",
+    "没找到官方 Telegram，先装一个": "Telegram app not found — install it first",
     "{m} 分 {s} 秒": "{m}m {s}s", "{s} 秒": "{s}s",
     "慢速模式：还要等 {t} 才能发。打开 ⏱ 连续发送，到点会自动发": "Slow mode: wait {t} before sending. Turn on ⏱ queued sending and it'll go out automatically",
     "，{found} 个是文件夹里本来就有的": ", {found} were already in the folder",
@@ -586,6 +589,25 @@ def forward_link(m):
     if isinstance(p, types.PeerUser):
         return f"tg://user?id={p.user_id}"
     return None
+
+
+def msg_links(e, msg_id, post=None):
+    """这条消息在官方 Telegram 里的地址：(tg:// 给客户端, https://t.me 给浏览器/复制)。
+    post 不为空 = 这条是频道帖子 post 下面的评论。小群（不是超级群）没有消息链接，只能打开聊天。"""
+    u = getattr(e, "username", None) or next((x.username for x in (getattr(e, "usernames", None) or []) if x.active), None)
+    if isinstance(e, types.Channel):
+        if post and post != msg_id:
+            q, tq = f"{post}?comment={msg_id}", f"post={post}&comment={msg_id}"
+        else:
+            q, tq = f"{msg_id}", f"post={msg_id}"
+        if u:
+            return f"tg://resolve?domain={u}&{tq}", f"https://t.me/{u}/{q}"
+        return f"tg://privatepost?channel={e.id}&{tq}", f"https://t.me/c/{e.id}/{q}"
+    if isinstance(e, types.User):
+        if u:
+            return f"tg://resolve?domain={u}", f"https://t.me/{u}"
+        return f"tg://user?id={e.id}", None
+    return None, None
 
 
 def entities_of(m):

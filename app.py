@@ -609,6 +609,31 @@ async def send_msg(request):
     return ok(id=msg.id)
 
 
+@routes.post("/api/open_tg")
+async def open_tg(request):
+    """右键 → 在原版 Telegram 里打开这条；copy=1 只要链接。"""
+    b = await request.json()
+    try:
+        e = await core.resolve(app.client, int(b["chat"]))
+    except Exception as ex:
+        return web.json_response({"error": str(ex)}, status=400)
+    tg, link = core.msg_links(e, int(b["id"]), int(b.get("post") or 0) or None)
+    if b.get("copy"):
+        if not link:
+            return web.json_response({"error": core.tr("这个聊天没有公开链接")}, status=400)
+        return ok(link=link)
+    if not tg:
+        return web.json_response({"error": core.tr("这种小群在官方客户端里没法直接定位到消息")}, status=400)
+    try:
+        os.startfile(tg)  # 装了官方 Telegram 就由它接管 tg:// 链接
+    except OSError:
+        if not link:
+            return web.json_response({"error": core.tr("没找到官方 Telegram，先装一个")}, status=400)
+        webbrowser.open(link)  # 没装客户端：用浏览器打开 t.me，网页上也能点“在 Telegram 中打开”
+        return ok(web=True)
+    return ok()
+
+
 @routes.post("/api/queue")
 async def queue_add(request):
     """连续发送：把一条（文字 + 可选的几个文件）排进队列。"""
