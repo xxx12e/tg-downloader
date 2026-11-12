@@ -1,5 +1,6 @@
 """TG 下载器图形界面：本地小服务器 + Edge 应用窗口。双击 启动.bat 运行。"""
 import asyncio
+import json
 import logging
 import mimetypes
 import msvcrt
@@ -8,6 +9,7 @@ import secrets
 import subprocess
 import sys
 import time
+import urllib.request
 import webbrowser
 from contextlib import aclosing
 from logging.handlers import RotatingFileHandler
@@ -60,6 +62,7 @@ class App:
         self.outq_tasks = {}  # (号, 聊天, 帖子) -> 发送任务
         self.outq_ids = 0
         self.hooked = set()  # 已经挂上“回复我的”监听的客户端
+        self.nav = None  # 资源管理器右键传进来的文件，等界面来取
 
     # ---- 登录 ----
     def start_boot(self):
@@ -609,6 +612,78 @@ async def send_msg(request):
     return ok(id=msg.id)
 
 
+@routes.post("/api/goto")
+async def goto(request):
+    """回到来源：给聊天+消息号，或者给一个下载好的文件路径，返回要跳去的聊天。"""
+    b = await request.json()
+    try:
+        if b.get("path"):
+            loc = core.locate_file(b["path"])
+            if not loc:
+                return web.json_response({"error": core.tr("认不出这个文件的来源：只认得用 TG 下载器下的、没改过名的文件")}, status=400)
+            e = await core.entity_by_raw(app.client, loc["raw"])
+            msg, post = loc["msg"], loc["post"]
+        else:
+            e = await core.resolve(app.client, int(b["chat"]))
+            msg, post = b.get("msg"), b.get("post")
+    except Exception as ex:
+        return web.json_response({"error": str(ex)}, status=400)
+    return ok(chat=core.chat_info(e), msg=msg, post=post)
+
+
+@routes.post("/api/nav")
+async def nav(request):
+    """资源管理器右键“回到 TG 原消息”：另一个进程把文件路径交过来，界面下次轮询时跳过去。"""
+    app.nav = (await request.json()).get("path")
+    return ok(window=time.time() - app.last_seen < 5 and not app.closed_at)
+
+
+SHELL_KEY = r"Software\Classes\*\shell\TGDownloaderGoBack"
+
+
+def shell_cmd():
+    exe = Path(sys.executable)
+    if exe.name.lower() == "python.exe":
+        exe = exe.with_name("pythonw.exe")
+    return f'"{exe}" "{Path(__file__).resolve()}" --goto "%1"'
+
+
+@routes.get("/api/shellmenu")
+async def shellmenu_get(_):
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, SHELL_KEY + r"\command") as k:
+            return ok(on=winreg.QueryValueEx(k, "")[0] == shell_cmd())
+    except OSError:
+        return ok(on=False)
+
+
+@routes.post("/api/shellmenu")
+async def shellmenu_set(request):
+    """在资源管理器的文件右键菜单里加/删“回到 TG 原消息”。只写当前用户自己的注册表，不用管理员权限。"""
+    import winreg
+    on = bool((await request.json()).get("on"))
+    H = winreg.HKEY_CURRENT_USER
+    try:
+        if on:
+            with winreg.CreateKey(H, SHELL_KEY) as k:
+                winreg.SetValueEx(k, "MUIVerb", 0, winreg.REG_SZ, "回到 TG 原消息" if core.LANG == "zh" else "Go to Telegram message")
+                tg = core.find_tg_exe()
+                if tg:
+                    winreg.SetValueEx(k, "Icon", 0, winreg.REG_SZ, tg)
+            with winreg.CreateKey(H, SHELL_KEY + r"\command") as k:
+                winreg.SetValueEx(k, "", 0, winreg.REG_SZ, shell_cmd())
+        else:
+            for sub in (SHELL_KEY + r"\command", SHELL_KEY):
+                try:
+                    winreg.DeleteKey(H, sub)
+                except FileNotFoundError:
+                    pass
+    except OSError as e:
+        return web.json_response({"error": str(e)}, status=400)
+    return ok(on=on)
+
+
 @routes.post("/api/open_tg")
 async def open_tg(request):
     """右键 → 在原版 Telegram 里打开这条；copy=1 只要链接。"""
@@ -730,7 +805,8 @@ async def lanes_left(_):
 
 @routes.get("/api/progress")
 async def progress(_):
-    return web.json_response({"running": app.running, "jobs": [j.snapshot() for j in reversed(app.jobs)]})
+    nav, app.nav = (app.nav, None) if app.stage == "ready" else (None, app.nav)
+    return web.json_response({"running": app.running, "jobs": [j.snapshot() for j in reversed(app.jobs)], "nav": nav})
 
 
 @routes.post("/api/files")
@@ -787,11 +863,21 @@ def single_instance():
 
 async def main():
     core.DATA.mkdir(exist_ok=True)
+    goto = sys.argv[sys.argv.index("--goto") + 1] if "--goto" in sys.argv[:-1] else None
     lock = single_instance()
     if lock is None:  # 已经开着了，再弹一个窗口就行
         port = PORT_FILE.read_text().strip() if PORT_FILE.exists() else PORT
+        if goto:  # 把文件交给开着的那个，窗口开着的话它自己跳，不用再弹一个
+            try:
+                req = urllib.request.Request(f"http://127.0.0.1:{port}/api/nav", json.dumps({"path": goto}).encode(),
+                                             {"X-Token": TOKEN, "Content-Type": "application/json"})
+                if json.load(urllib.request.urlopen(req, timeout=5)).get("window"):
+                    return
+            except Exception as e:
+                log.warning("交给已开着的程序失败: %r", e)
         open_window(f"http://127.0.0.1:{port}/")
         return
+    app.nav = goto
 
     webapp = web.Application(middlewares=[guard], client_max_size=2 * 1024 ** 3)  # 默认只收 1MB，发文件会被拒
     webapp.add_routes(routes)

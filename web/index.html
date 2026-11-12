@@ -405,6 +405,10 @@ const I18N = {
   "手机打开 Telegram →": "On your phone, open Telegram →", "设置": "Settings", "设备": "Devices",
   "连接桌面设备": "Link Desktop Device", "扫上面的码，只需要登录这一次": "Scan the code above — you only need to do this once",
   "取消，回到原来的号": "Cancel and go back",
+  "回到原来的位置": "Go to original message", "回到来源": "Go to source",
+  "资源管理器右键：回到 TG 原消息": "Explorer right-click: go to Telegram message",
+  "已加好：在下载好的文件上右键（Win11 在「显示更多选项」里）": "Added: right-click a downloaded file (on Windows 11, under \"Show more options\")",
+  "已从右键菜单移除": "Removed from the right-click menu",
   "在原版 Telegram 里打开": "Open in Telegram app", "跳到转发来源": "Go to original post", "复制消息链接": "Copy message link",
   "没装官方客户端，用浏览器打开了": "Telegram app not found, opened in browser", "已在 Telegram 中打开": "Opened in Telegram",
   "连续发送：一次写好几条，慢速模式到点自动一条条发": "Queued sending: write several messages, each goes out when slow mode allows",
@@ -583,8 +587,9 @@ function renderAccBtn() {
   const a = ACC.list.find(x => x.s === ACC.s);
   if (a) { $("accBtn").innerHTML = accAva(a, "xs"); $("accBtn").title = a.name + " · " + t("切换账号"); }
 }
-function accMenu(e) {
+async function accMenu(e) {
   e.stopPropagation();
+  try { ACC.shell = (await api("/api/shellmenu")).on; } catch (x) {}
   const r = $("accBtn").getBoundingClientRect();
   const items = ACC.list.map(a => [
     `<span class="accrow">${accAva(a, "xs")}<span class="grow">${esc(a.name)}</span>${a.s === ACC.s ? "✓" : ""}</span>`,
@@ -594,6 +599,11 @@ function accMenu(e) {
     try { await api("/api/settings", "POST", { save_replies: !ACC.save }); ACC.save = !ACC.save; }
     catch (e) { return toast(e.message); }
     toast(ACC.save ? t("别人回复你的消息会自动存到 downloads/回复我的") : t("已关闭自动保存回复"));
+  }]);
+  items.push([`<span class="accrow"><span class="accplus">${ACC.shell ? "✓" : ""}</span>${t("资源管理器右键：回到 TG 原消息")}</span>`, async () => {
+    try { ACC.shell = (await api("/api/shellmenu", "POST", { on: !ACC.shell })).on; }
+    catch (e) { return toast(e.message); }
+    toast(ACC.shell ? t("已加好：在下载好的文件上右键（Win11 在「显示更多选项」里）") : t("已从右键菜单移除"));
   }]);
   items.push([`<span class="accrow"><span class="accplus">📂</span>${t("打开回复记录")}</span>`, () =>
     api("/api/open", "POST", { path: ACC.repliesDir }).catch(() => toast(t("还没有人回复过你")))]);
@@ -965,8 +975,9 @@ function bubbleHtml(it, idx, opts) {
   const meta = `${it.views != null ? `<span>👁 ${it.views >= 1000 ? (it.views / 1000).toFixed(1) + "K" : it.views}</span>` : ""}${it.author ? `<span>${esc(it.author)}</span>` : ""}${it.edited ? `<span>${t("已编辑")}</span>` : ""}<span>${hhmm(when)}</span>`;
   const mediaOnly = n && !it.text && !files.length && !it.web;
   const who = opts.showName ? `<div class="who" style="color:${NAMECOLORS[Math.abs(it.sender_id || 0) % 7]}">${esc(it.sender)}</div>` : "";
-  const fwd = it.fwd ? (it.fwd_link
-    ? `<div class="fwd lnk2" data-act="url" data-v="${esc(it.fwd_link)}" title="${t("打开原消息")}">${t("转发自")} <b>${esc(it.fwd)}</b></div>`
+  const fwd = it.fwd ? (it.src
+    ? `<div class="fwd lnk2" data-act="src" title="${t("回到原来的位置")}">${t("转发自")} <b>${esc(it.fwd)}</b></div>`
+    : it.fwd_link ? `<div class="fwd lnk2" data-act="url" data-v="${esc(it.fwd_link)}" title="${t("打开原消息")}">${t("转发自")} <b>${esc(it.fwd)}</b></div>`
     : `<div class="fwd">${t("转发自")} <b>${esc(it.fwd)}</b></div>`) : "";
   // 单张竖图/竖视频：气泡跟着变窄（和 TG 一样），最高 460px
   const v0 = visual[0], ratio = n === 1 && v0.w && v0.h ? v0.w / v0.h : 1;
@@ -1038,6 +1049,7 @@ function onMsgClick(e) {
   if (act === "tag") return openSearch(a.dataset.v);  // #话题：在这个聊天里搜
   if (act === "reply") return jumpTo(cur.chat, +a.dataset.v, cur.post);
   if (act === "thread") return openThread(cur.items[+a.dataset.i]);
+  if (act === "src") { const it = itemAt(e.target); if (it && it.src) return goSrc(it.src); }
   const el = e.target.closest("[data-key]");
   if (!el) {  // 搜索结果：点消息跳到它在聊天里的位置
     if (cur.search) { const it = itemAt(e.target); if (it) jumpTo(cur.chat, it.ids[0]); }
@@ -1062,10 +1074,11 @@ function onMsgMenu(e) {
   }
   if (it.media.length > 1) items.push([LANG === "en" ? `Download all ${it.media.length} files here` : `下载这条的全部 ${it.media.length} 个文件`, () => download(it.media, it)]);
   if (it !== cur.postItem) items.push([t(cur.selecting ? "选中 / 取消选中" : "选择"), () => { if (!cur.selecting) toggleSelect(); toggleSel(it); }]);
+  if (it.src) items.unshift([t("回到原来的位置"), () => goSrc(it.src)]);
   const ref = { chat: cur.chat, post: cur.post || 0, id: it === cur.postItem ? cur.post : it.ids[0] };
   items.push([t("在原版 Telegram 里打开"), () => api("/api/open_tg", "POST", ref)
     .then(r => toast(t(r.web ? "没装官方客户端，用浏览器打开了" : "已在 Telegram 中打开"))).catch(e => toast(e.message))]);
-  if (it.fwd_link) items.push([t("跳到转发来源"), () => openLink(it.fwd_link)]);
+  if (it.fwd_link && !it.src) items.push([t("跳到转发来源"), () => openLink(it.fwd_link)]);
   items.push([t("复制消息链接"), () => api("/api/open_tg", "POST", { ...ref, copy: 1 })
     .then(r => navigator.clipboard.writeText(r.link)).then(() => toast(t("已复制"))).catch(e => toast(e.message))]);
   if (it.text) items.push([t("复制文字"), () => navigator.clipboard.writeText(it.text).then(() => toast(t("已复制")))]);
@@ -1210,6 +1223,7 @@ const speeds = {};
 async function pollJobs() {
   let p;
   try { p = await api("/api/progress"); } catch (e) { return; }
+  if (p.nav) goSrc({ path: p.nav });
   const running = p.jobs.filter(j => j.status === "下载中" || j.status === "排队中").length;
   $("dlcount").textContent = running; $("dlcount").classList.toggle("hidden", !running);
   if ($("drawerWrap").classList.contains("hidden")) return;
@@ -1227,11 +1241,23 @@ async function pollJobs() {
       ${j.active.map(a => { const fp = a.size ? Math.round(a.got / a.size * 100) : 0; return `<div class="af"><span title="${esc(a.name)}">${esc(a.name)}</span><div class="bar"><i style="width:${fp}%"></i></div><span>${fp}%</span></div>`; }).join("")}
       ${j.logs.length ? `<div class="jl" title="${esc(j.logs.join("\n"))}">${esc(j.logs[j.logs.length - 1])}</div>` : ""}
       <div class="ja">
+        ${j.src ? `<button class="btn" onclick='goSrc(${esc(JSON.stringify(j.src))})'>📍 ${t("回到来源")}</button>` : ""}
         ${j.out ? `<button class="btn" onclick='openPath(${esc(JSON.stringify(j.out))})'>${t("打开文件夹")}</button>` : ""}
         ${run || j.status === "排队中" ? `<button class="btn red" onclick="api('/api/cancel','POST',{id:${j.id}})">${t("停止")}</button>` : ""}
       </div>
     </div>`;
   }).join("") : `<div class="empty">${t("还没有下载任务")}<br><br>${t("在聊天里点图片/文件上的 ⬇，或者点右上角“下载全部”")}</div>`;
+}
+/* 回到来源：转发/收藏的消息、下载任务、下载好的文件 → 跳回原来那条消息 */
+async function goSrc(body) {
+  let r;
+  try { r = await api("/api/goto", "POST", body); } catch (e) { return toast(e.message); }
+  const c = r.chat;
+  if (!chats.some(x => x.id === c.id)) extra.set(c.id, c);
+  closeDrawer(); closeViewer();
+  if (r.post && r.msg) return openThreadById(c.id, r.post, r.msg);
+  if (r.msg) return jumpTo(c.id, r.msg);
+  const v = newView(c.id); v.older = 0; show(v, true);
 }
 function openPath(path, reveal) { api("/api/open", "POST", { path, reveal: reveal ? 1 : 0 }).catch(e => toast(e.message)); }
 

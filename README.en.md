@@ -27,6 +27,7 @@ Chat list on the left, message bubbles on the right — much like the app you us
 - "💬 N comments" under a channel post opens the comment thread, just like on mobile
 - In-chat search; Esc or the mouse back button to go back
 - Right-click a message: **open it in the official Telegram app**, jump to the original post of a forward, or copy its link
+- **Go back to the source** — from a message saved to Saved Messages, or a download task, jump straight back to the original message; you can even right-click a downloaded file in File Explorer → "Go to Telegram message" (toggle in the menu)
 - **Dark mode** — 🌙 in the top left, follows your system setting by default
 - **Bilingual UI** — switch between English and Chinese from the top left (job logs and statuses follow too)
 - **You can send messages** — composer at the bottom: Enter to send, replies, photos and files, delete your own

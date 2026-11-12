@@ -61,6 +61,10 @@ EN = {
     "完成：新下载 {ok} 个，跳过已有 {skip} 个": "Done: {ok} new, {skip} already had",
     "（其中 {dup} 个是频道重复发的，没重复下）": " ({dup} were reposts, not downloaded again)",
     "这个号已经登录过了，直接切换过去了": "That account was already logged in; switched to it",
+    "当前这个号看不到这个文件来自的聊天（可能是别的号下的，或者已经退出了）":
+        "This account can't see the chat this file came from (downloaded with another account, or you left it)",
+    "认不出这个文件的来源：只认得用 TG 下载器下的、没改过名的文件":
+        "Can't tell where this file came from — only files downloaded by TG Downloader, with their original names, can be traced",
     "这个聊天没有公开链接": "This chat has no shareable link",
     "这种小群在官方客户端里没法直接定位到消息": "Telegram can't link to messages in this kind of small group",
     "没找到官方 Telegram，先装一个": "Telegram app not found — install it first",
@@ -281,6 +285,18 @@ def port_open(port):
     with socket.socket() as s:
         s.settimeout(0.5)
         return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def find_tg_exe():
+    """官方 Telegram 装在哪（从 tg:// 链接的注册表项里读），没装返回 None。"""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, r"tg\shell\open\command") as k:
+            cmd = winreg.QueryValueEx(k, "")[0]
+        exe = cmd.split('"')[1] if cmd.startswith('"') else cmd.split()[0]
+        return exe if Path(exe).exists() else None
+    except (OSError, IndexError):
+        return None
 
 
 def system_proxy():
@@ -580,6 +596,46 @@ def forward_name(m):
         return f.from_name or "转发"
 
 
+def source_of(m):
+    """转发来的消息原本在哪：存到收藏夹的会带着原聊天+原消息号（群、私聊都有）；频道转发带原帖号。"""
+    f = m.fwd_from if m else None
+    if not f:
+        return None
+    if f.saved_from_peer and f.saved_from_msg_id:
+        return {"chat": utils.get_peer_id(f.saved_from_peer), "msg": f.saved_from_msg_id}
+    if isinstance(f.from_id, types.PeerChannel) and f.channel_post:
+        return {"chat": utils.get_peer_id(f.from_id), "msg": f.channel_post}
+    return None
+
+
+def locate_file(path):
+    """从下载好的文件反推它来自哪条消息。文件名 = 日期_消息号_原名，上层文件夹 = 聊天名_聊天ID，
+    评论区的文件在 评论区/帖子N/ 下面。"""
+    p = Path(path)
+    m = re.match(r"\d{8}_(\d+)", p.name)
+    if not m:
+        return None
+    msg, post, parts = int(m.group(1)), None, p.parts
+    for i in range(len(parts) - 2, 0, -1):
+        if parts[i].startswith("帖子") and parts[i - 1] == "评论区" and parts[i][2:].isdigit():
+            post = int(parts[i][2:])
+        if mm := re.search(r"_(-?\d+)$", parts[i]):
+            return {"raw": int(mm.group(1)), "msg": msg, "post": post}
+    return None
+
+
+async def entity_by_raw(client, raw):
+    """文件夹名里存的是不带前缀的 ID，不知道是频道、群还是人，挨个试。"""
+    if raw < 0:
+        return await resolve(client, raw)
+    for peer in (types.PeerChannel(raw), types.PeerUser(raw), types.PeerChat(raw)):
+        try:
+            return await client.get_entity(peer)
+        except (ValueError, TypeError, errors.RPCError):
+            pass
+    raise ValueError(tr("当前这个号看不到这个文件来自的聊天（可能是别的号下的，或者已经退出了）"))
+
+
 def forward_link(m):
     """“转发自”能点：频道转发跳到原帖，用户转发打开那个人。拿不到来源（隐藏了）返回 None。"""
     f = m.fwd_from if m else None
@@ -728,6 +784,7 @@ async def browse(client, chat, post=None, offset_id=0, limit=40, asc=False, sear
             "views": first.views,
             "fwd": forward_name(first),
             "fwd_link": forward_link(first),
+            "src": source_of(first),
             "edited": bool(first.edit_date),
             "text": tm.message if tm else "",
             "ents": entities_of(tm),
@@ -1231,6 +1288,7 @@ class Job:
         self.local = None  # 目标文件夹里已有的文件，按大小分好；第一次要用时才扫
         self.comment_posts = self.comments = 0
         self.root = Path(opts.get("out_dir") or DEFAULT_OUT)  # 这一次下到哪个文件夹
+        self.src = None
         self.fail = []
         self.active = {}
         self.keys = set()
@@ -1244,7 +1302,7 @@ class Job:
     def snapshot(self):
         return {
             "id": self.id, "title": self.title, "status": self.status,
-            "out": str(self.out) if self.out else None, "picked": bool(self.picked),
+            "out": str(self.out) if self.out else None, "picked": bool(self.picked), "src": self.src,
             "scan": self.scan, "total": self.total, "done": self.done, "ok": self.ok, "skip": self.skip,
             "fail": len(self.fail), "dup": self.dup, "found": self.found, "bytes": self.bytes + sum(a["got"] for a in self.active.values()),
             "comment_posts": self.comment_posts, "comments": self.comments,
@@ -1287,6 +1345,9 @@ class Job:
         if msg_id and not self.picked:
             self.title += tr(" · 帖子{post}", post=msg_id)
         self.out = chat_folder(entity, self.root)
+        first = self.picked["msgs"][0].id if self.picked else msg_id
+        self.src = {"chat": utils.get_peer_id(entity), "msg": first,  # 下载管理里“回到来源”用
+                    "post": (self.picked["post"] or None) if self.picked else None}
         self.out.mkdir(parents=True, exist_ok=True)
 
         has_comments = isinstance(entity, types.Channel) and entity.broadcast and getattr(entity, "has_link", False)
