@@ -428,7 +428,10 @@ const I18N = {
   // 聊天头部
   "评论": "Comments", "未加入": "Not joined", "条评论": " comments", "搜索：": "Search: ",
   "· 点消息跳到原位置": " · click a result to jump to it", "在这个聊天里搜索": "Search in this chat",
-  "关键词 或 #话题": "Keyword or #hashtag", "返回（Esc）": "Back (Esc)", "到最新": "Jump to latest",
+  "关键词 或 #话题": "Keyword or #hashtag", "下载 ·": "Download ·", "只要带这些标签的": "Only messages with these tags",
+  "正在统计这里用过的标签…": "Collecting tags used here…", "也可以自己写，空格隔开，比如 #合集 #教程": "Or type your own, space-separated, e.g. #collection #tutorial",
+  "一个都不选 = 整个聊天全下": "None selected = download the whole chat", "最近的消息里没有标签": "No tags in recent messages",
+  "全部下载": "Download all", "下载这个标签的全部": "Download everything with this tag", "返回（Esc）": "Back (Esc)", "到最新": "Jump to latest",
   "选择": "Select", "取消选择": "Cancel", "下载全部": "Download all", "下载全部评论": "Download all comments",
   // 消息
   "今天": "Today", "昨天": "Yesterday", "周": "", "日一二三四五六": "SunMonTueWedThuFriSat",
@@ -727,7 +730,7 @@ function renderChat() {
       <div class="act">
         ${v.post ? "" : `<button class="icon" onclick="askSearch()" title="${t("在这个聊天里搜索")}">🔍</button>`}
         <button class="btn" onclick="toggleSelect()" id="selbtn">${t(v.selecting ? "取消选择" : "选择")}</button>
-        ${v.search ? "" : `<button class="btn" onclick="openModal()">⬇ ${t(v.post ? "下载全部评论" : "下载全部")}</button>`}
+        <button class="btn" onclick="openModal()">⬇ ${v.search ? t("全部下载") : t(v.post ? "下载全部评论" : "下载全部")}</button>
       </div>
     </div>
     <div id="scroller"><div id="msgs"></div></div>
@@ -1066,6 +1069,8 @@ function onMsgMenu(e) {
   if (!it) return;
   e.preventDefault();
   const items = [];
+  const tagEl = e.target.closest('[data-act="tag"]');
+  if (tagEl && !cur.post) items.push([t("下载这个标签的全部"), () => openModal(tagEl.dataset.v)], [t("搜索") + " " + esc(tagEl.dataset.v), () => openSearch(tagEl.dataset.v)]);
   if (el) {
     const { m } = cur.media.get(el.dataset.key);
     items.push([t(previewKind(m) === "audio" ? "播放" : "预览"), () => preview(m, it)]);
@@ -1179,10 +1184,16 @@ async function downloadSelected() {
 
 /* 下载全部（弹窗） */
 const defaults = () => Object.assign({ scope: "both", types: TYPES.filter(x => x[0] !== "sticker").map(x => x[0]), text: true, max: "" }, JSON.parse(localStorage.getItem("tgdl.opts") || "{}"));
-function openModal() {
+function openModal(preset) {
   const v = cur, o = defaults(), showScope = !v.post && v.c.comments;
+  if (preset === undefined && v.search) preset = v.search;       // 在 #标签 / 搜索结果页点的
+  const tagMode = !v.post;
   $("modalBox").innerHTML = `
-    <h3>${v.post ? t("下载这条帖子的全部评论") : t("下载全部 ·") + " " + esc(v.c.name)}</h3>
+    <h3>${v.post ? t("下载这条帖子的全部评论") : preset ? t("下载 ·") + " " + esc(preset) : t("下载全部 ·") + " " + esc(v.c.name)}</h3>
+    ${tagMode ? `<div class="opt"><div class="lb">${t("只要带这些标签的")}</div>
+      <div class="chips" id="mtags">${preset ? `<label><input type="checkbox" value="${esc(preset)}" checked>${esc(preset)}</label>` : ""}<span class="tagload" style="color:var(--sub);font-size:13px">${t("正在统计这里用过的标签…")}</span></div>
+      <input class="sinput" id="mtagin" style="margin-top:6px;width:100%;box-sizing:border-box" placeholder="${t("也可以自己写，空格隔开，比如 #合集 #教程")}">
+      <div style="color:var(--sub);font-size:12px;margin-top:4px">${t("一个都不选 = 整个聊天全下")}</div></div>` : ""}
     ${showScope ? `<div class="opt"><div class="lb">${t("内容")}</div><div class="chips">
       ${[["both", "帖子 + 评论区"], ["comments", "只要评论区"], ["posts", "只要帖子"]].map(([k, n]) => `<label><input type="radio" name="scope" value="${k}" ${o.scope === k ? "checked" : ""}>${t(n)}</label>`).join("")}
     </div></div>` : ""}
@@ -1196,6 +1207,18 @@ function openModal() {
     <div style="color:var(--sub);font-size:13px">${t("已经下过的文件会自动跳过，中途停了下次接着下。")}</div>
     <div class="foot"><button class="btn" onclick="closeModal()">${t("取消")}</button><button class="btn fill" onclick="startAll()">${t("开始下载")}</button></div>`;
   $("modal").classList.remove("hidden");
+  if (tagMode) loadTags(v, preset);
+}
+const tagCache = {};
+async function loadTags(v, preset) {
+  let rows = tagCache[v.chat];
+  if (!rows) { try { rows = tagCache[v.chat] = await api(`/api/tags?chat=${v.chat}`); } catch (e) { rows = []; } }
+  const box = $("mtags"); if (!box || cur !== v) return;
+  box.querySelector(".tagload").remove();
+  const low = (preset || "").toLowerCase();
+  box.insertAdjacentHTML("beforeend", rows.filter(([n]) => n.toLowerCase() !== low).slice(0, 60).map(([n, c]) =>
+    `<label><input type="checkbox" value="${esc(n)}">${esc(n)} <small style="color:var(--sub)">${c}</small></label>`).join("")
+    || (preset ? "" : `<span style="color:var(--sub);font-size:13px">${t("最近的消息里没有标签")}</span>`));
 }
 function closeModal() { $("modal").classList.add("hidden"); if (modalCancel) { const f = modalCancel; modalCancel = null; f(); } }
 async function startAll() {
@@ -1205,12 +1228,14 @@ async function startAll() {
     types: [...document.querySelectorAll("#mtypes input:checked")].map(i => i.value),
     text: $("mtext").checked, max: $("mmax").value,
   };
+  const tags = v.post ? [] : [...new Set([...document.querySelectorAll("#mtags input:checked")].map(i => i.value)
+    .concat(($("mtagin") ? $("mtagin").value : "").split(/[\s,，]+/).filter(Boolean).map(x => x.startsWith("#") || v.search === x ? x : "#" + x)))];
   localStorage.setItem("tgdl.opts", JSON.stringify(v.post ? { ...defaults(), types: o.types, text: o.text, max: o.max } : o));
   closeModal();
-  const dir = await askDir(v.post ? t("下载全部评论") : t("下载全部") + " · " + v.c.name);
+  const dir = await askDir(v.post ? t("下载全部评论") : (tags.length ? tags.join(" ") : t("下载全部")) + " · " + v.c.name);
   if (!dir) return;
   try {
-    await api("/api/start", "POST", { targets: [v.post ? { chat: v.chat, msg: v.post } : v.chat], scope: o.scope, types: o.types, text: o.text, max_size: parseFloat(o.max) || null, out_dir: dir });
+    await api("/api/start", "POST", { targets: [v.post ? { chat: v.chat, msg: v.post } : v.chat], scope: o.scope, types: o.types, text: o.text, tags, max_size: parseFloat(o.max) || null, out_dir: dir });
     openDrawer();
   } catch (e) { toast(e.message); }
 }

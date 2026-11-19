@@ -61,6 +61,8 @@ EN = {
     "完成：新下载 {ok} 个，跳过已有 {skip} 个": "Done: {ok} new, {skip} already had",
     "（其中 {dup} 个是频道重复发的，没重复下）": " ({dup} were reposts, not downloaded again)",
     "这个号已经登录过了，直接切换过去了": "That account was already logged in; switched to it",
+    "{tag}：找到 {n} 条": "{tag}: {n} messages found",
+    "Telegram 限流了，等 {sec} 秒后自动继续": "Rate-limited by Telegram, resuming automatically in {sec}s", "搜索_{q}": "search_{q}",
     "当前这个号看不到这个文件来自的聊天（可能是别的号下的，或者已经退出了）":
         "This account can't see the chat this file came from (downloaded with another account, or you left it)",
     "认不出这个文件的来源：只认得用 TG 下载器下的、没改过名的文件":
@@ -715,6 +717,21 @@ async def fetch_msgs(client, chat, post, ids):
     return [m for m in await client.get_messages(entity, ids=list(ids)) if m]
 
 
+async def chat_tags(client, chat, limit=1500):
+    """这个聊天里最近用过的 #标签 和次数，给下载弹窗里挑。"""
+    entity = await resolve(client, chat)
+    count = {}
+    async for m in client.iter_messages(entity, limit=limit):
+        seen = set()
+        for _, text in m.get_entities_text(types.MessageEntityHashtag):
+            k = text.lower()
+            if k not in seen:
+                seen.add(k)
+                n, name = count.get(k, (0, text))
+                count[k] = (n + 1, name)
+    return sorted(([name, n] for n, name in count.values()), key=lambda x: -x[1])
+
+
 async def reply_quotes(client, msgs, in_thread):
     """回复引用：一页只多发一次请求。返回 {消息ID: 引用信息}。"""
     want = {}
@@ -1272,6 +1289,23 @@ async def stream_chunks(client, doc, size, start, stop, lanes=STREAM_LANES):
                 t.cancel()
 
 
+RUNNING = set()  # 正在跑的下载任务
+
+
+class FloodNotice(logging.Handler):
+    """Telethon 被限流时会自己悄悄睡几分钟再继续，界面看着像卡死了。把这件事写进任务日志。"""
+    def emit(self, record):
+        m = re.match(r"Sleeping(?: early)? for (\d+)s", record.getMessage())
+        if m and int(m.group(1)) >= 5:
+            for j in list(RUNNING):
+                j.say(tr("Telegram 限流了，等 {sec} 秒后自动继续", sec=m.group(1)))
+
+
+_flood_log = logging.getLogger("telethon.client.users")
+_flood_log.setLevel(logging.INFO)
+_flood_log.addHandler(FloodNotice())
+
+
 class Job:
     """下载一个群/频道/链接。scope: posts=只要帖子, comments=只要评论区, both=都要（评论区只对带评论的频道有效）。
     picked={"post": 帖子ID或0, "msgs": [消息]} 时只下这些手动点的消息（post 不为 0 = 点的是这个帖子下的评论）。
@@ -1298,6 +1332,8 @@ class Job:
         self.comment_posts = self.comments = 0
         self.root = Path(opts.get("out_dir") or DEFAULT_OUT)  # 这一次下到哪个文件夹
         self.src = None
+        # 只要带这些 #标签（或搜这些关键词）的消息；空 = 不筛
+        self.tags = list(dict.fromkeys(x.strip() for x in (opts.get("tags") or []) if x and x.strip().lstrip("#")))
         self.fail = []
         self.active = {}
         self.keys = set()
@@ -1319,6 +1355,7 @@ class Job:
         }
 
     async def run(self):
+        RUNNING.add(self)
         try:
             await self._run()
             self.status = "完成"
@@ -1335,6 +1372,7 @@ class Job:
             self.say(tr("出错：{e}", e=e))
             log.exception("任务出错")
         finally:
+            RUNNING.discard(self)
             save_index()
             for k in self.keys:  # 没下完的恢复成“未下载”
                 if FILES.get(k, {}).get("s") in ("queued", "loading"):
@@ -1366,6 +1404,8 @@ class Job:
         if self.picked:
             n = len({m.grouped_id or m.id for m in self.picked["msgs"]})
             self.title += (tr(" · 帖子{post}的评论 · {n} 条", post=post_id, n=n) if post_id else tr(" · {n} 条", n=n))
+        if self.tags and not self.picked and not msg_id:
+            self.title += " · " + " ".join(self.tags)
         self.status = "下载中"
         if not self.picked:
             self.say(tr({"posts": "下载全部消息", "comments": "只下评论区", "both": "下载全部帖子 + 评论区"}[scope])
@@ -1393,6 +1433,9 @@ class Job:
                 if want_comments:
                     post = next((m for m in msgs if m.replies and m.replies.comments), msgs[0])
                     await self.download_comments(entity, post)
+            elif self.tags:
+                for tag in self.tags:
+                    await self.download_tag(entity, tag, want_posts, want_comments)
             else:
                 textlog = TextLog(self.out, self.title) if self.text and want_posts else None
                 seen = set()
@@ -1420,7 +1463,47 @@ class Job:
             for w in workers:
                 w.cancel()
 
-    async def download_comments(self, entity, post):
+    async def download_tag(self, entity, tag, want_posts, want_comments):
+        """下一个 #标签 的全部内容，存到 群名/#标签/ 下面。不带 # 的当普通关键词搜。"""
+        strict = re.compile(re.escape(tag) + r"(?!\w)", re.I) if tag.startswith("#") else None
+        found = {}
+        async for m in self.client.iter_messages(entity, search=tag):
+            self.scan += 1
+            if strict is None or strict.search(m.message or ""):  # #抖音 不要把 #抖音网红 也算进来
+                found[m.id] = m
+        # 相册只有一张带文字，搜出来就只有那一张：按相册编号把同组的几张补上
+        groups = {m.grouped_id for m in found.values() if m.grouped_id}
+        near = sorted({i for m in found.values() if m.grouped_id for i in range(m.id - 10, m.id + 11)} - found.keys())
+        for k in range(0, len(near), 100):
+            for m in await self.client.get_messages(entity, ids=near[k:k + 100]):
+                if m and m.grouped_id in groups:
+                    found[m.id] = m
+        msgs = sorted(found.values(), key=lambda m: m.id)
+        self.say(tr("{tag}：找到 {n} 条", tag=tag, n=len({m.grouped_id or m.id for m in msgs})))
+        if not msgs:
+            return
+        out = self.out / safe(tag if tag.startswith("#") else tr("搜索_{q}", q=tag))
+        out.mkdir(parents=True, exist_ok=True)
+        textlog = TextLog(out, self.title) if self.text and want_posts else None
+        seen = set()
+        try:
+            for m in msgs:
+                kind = kind_of(m)
+                if want_posts:
+                    if textlog:
+                        textlog.add(m, kind, file_name(m, kind) if kind else None)
+                    if kind:
+                        await self.enqueue(m, kind, save_path(out, m, kind))
+                if want_comments and m.replies and m.replies.comments and m.replies.replies:
+                    if (key := m.grouped_id or m.id) not in seen:
+                        seen.add(key)
+                        await self.download_comments(entity, m, out)
+        finally:
+            if textlog:
+                textlog.close()
+
+    async def download_comments(self, entity, post, base=None):
+        base = base or self.out
         lines = []
         try:
             async for c in self.client.iter_messages(entity, reply_to=post.id, reverse=True):
@@ -1429,13 +1512,13 @@ class Job:
                 kind = kind_of(c)
                 lines.append(fmt_line(c, kind, file_name(c, kind) if kind else None, "匿名"))
                 if kind:
-                    await self.enqueue(c, kind, save_path(self.out, c, kind, post.id))
+                    await self.enqueue(c, kind, save_path(base, c, kind, post.id))
         except errors.RPCError as e:
             self.say(tr("帖子 {id} 的评论读不到：{e}", id=post.id, e=e))
             return
         self.comment_posts += 1
         if self.text and lines:
-            folder = self.out / "评论区" / f"帖子{post.id}"
+            folder = base / "评论区" / f"帖子{post.id}"
             folder.mkdir(parents=True, exist_ok=True)
             head = (f"帖子 {post.id}（{post.date.astimezone():%Y-%m-%d %H:%M}）\n"
                     f"{(post.message or '').strip()[:500]}\n{'-' * 40}\n")

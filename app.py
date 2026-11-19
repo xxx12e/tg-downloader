@@ -422,6 +422,15 @@ async def messages(request):
     return web.json_response({"items": items, "next": nxt})
 
 
+@routes.get("/api/tags")
+async def tags(request):
+    """这个群/频道里最近用过的标签，给“下载全部”弹窗挑。"""
+    try:
+        return web.json_response(await core.chat_tags(app.client, int(request.query["chat"])))
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=400)
+
+
 @routes.post("/api/resolve")
 async def resolve_link(request):
     """点了 TG 链接：告诉前端跳去哪个聊天、哪条消息。"""

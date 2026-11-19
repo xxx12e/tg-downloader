@@ -15,6 +15,7 @@ A Telegram client that looks and feels like Telegram Desktop — except every ph
 
 - 📥 **Download comments and restricted channels** — up to 10× faster than a normal download
 - 👀 **Preview before you download** — photos, videos, music and PDFs open with a click; videos stream while they load
+- 🏷 **Download by #hashtag** — see every tag used in a group with counts, tick a few and get everything tagged with them, including the uncaptioned photos in the same albums
 - 🧹 **No duplicates** — files already in the folder you pick are skipped, even if renamed, moved, or saved by the official app
 - 👥 **Multiple accounts** — no limit, switch from the top left; downloads keep running on the account you left
 - ⏱ **Slow-mode queue** — write several messages at once, each one goes out as soon as it's allowed
@@ -163,5 +164,5 @@ MIT
 
 <sub>Keywords: telegram downloader, telegram media downloader, download restricted telegram content,
 telegram protected content saver, save restricted media, telegram no forwards, telegram comments downloader,
-telegram channel downloader, telegram bulk download, telegram backup tool, telegram chat export, telegram multiple accounts, telegram slow mode, slow mode message queue, telegram reply archive, telegram saved messages source, telegram duplicate file skip,
+telegram channel downloader, telegram bulk download, telegram backup tool, telegram chat export, telegram multiple accounts, telegram slow mode, slow mode message queue, telegram reply archive, telegram saved messages source, telegram duplicate file skip, telegram hashtag downloader, download by tag,
 telethon, mtproto, telegram gui client, telegram scraper, 电报下载器, TG 下载器</sub>
