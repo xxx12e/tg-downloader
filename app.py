@@ -210,6 +210,7 @@ class App:
 
     async def drop(self, s):
         if c := self.clients.pop(s, None):
+            await core.close_pool(c)
             await c.disconnect()
         core.drop_session_files(s)
 
@@ -236,6 +237,7 @@ class App:
                 log.warning("退出登录出错: %r", e)
                 done = False
             self.clients.pop(s, None)
+            await core.close_pool(client)
             if not done:
                 await client.disconnect()
         core.remove_account(s)
@@ -959,7 +961,8 @@ async def main():
     app.cancel()
     await asyncio.sleep(0.5)
     try:  # 有连接卡着（窗口卡死、播放到一半）也别一直等，5 秒还没收完就直接退
-        await asyncio.wait_for(asyncio.gather(*(c.disconnect() for c in app.clients.values()), runner.cleanup()), 5)
+        await asyncio.wait_for(asyncio.gather(*(core.close_pool(c) for c in app.clients.values()),
+                                              *(c.disconnect() for c in app.clients.values()), runner.cleanup()), 5)
     except Exception as e:
         log.warning("退出时没收拾干净: %r", e)
     os._exit(0)

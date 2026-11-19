@@ -17,6 +17,8 @@ from urllib.parse import parse_qs, urlparse
 
 import qrcode
 from telethon import TelegramClient, errors, events, functions, types, utils
+from telethon.network.mtprotosender import MTProtoSender
+from telethon.tl.alltlobjects import LAYER
 from telethon.tl.types import MessageMediaWebPage
 
 ROOT = Path(__file__).resolve().parent
@@ -45,9 +47,11 @@ KINDS = {  # 类型 -> 子文件夹
 DEFAULT_KINDS = [k for k in KINDS if k != "sticker"]
 # 下载并行度。实测：一路 1.4 MB/s，4 路 7 MB/s，8 路 14 MB/s，16 路以上忽快忽慢、24 路反而变慢
 CHUNK = 512 * 1024        # Telegram 一次最多给 512 KB
-LANES_PER_FILE = 8        # 单个文件最多开几路
-LANES_TOTAL = 16          # 全局同时最多几路，太多会被限流
-STREAM_LANES = 8          # 在线播放最多预取几块（空闲时 8 路约 13 MB/s；下载占满时自动少拿几路，但至少 2 路保证不卡）
+# 实测：Telegram 每条连接大约只给 0.3 MB/s（每 512KB 固定要 1.7 秒），一条连接上同时塞多个请求反而更慢。
+# 所以每路占一条独立连接，路数越多越快：8 路 2.5 MB/s，16 路 4.7，24 路 7.5。
+LANES_PER_FILE = 16       # 单个大文件最多开几路
+LANES_TOTAL = 24          # 全局同时最多几路（= 每个数据中心开的连接数），给小文件和播放留出余量
+STREAM_LANES = 12         # 在线播放最多同时取几块（下载占满时自动少拿，但至少 2 路保证不卡）
 JOBS = 8                  # 每个任务同时处理几个文件（真正的限制是上面的总路数）
 
 log = logging.getLogger("tg")
@@ -1134,6 +1138,159 @@ class LanePool:
 LANES = LanePool(LANES_TOTAL)
 
 
+# ---------------- 多连接 ----------------
+# Telethon 默认每个数据中心只开一条连接，所有并行请求都挤在这一条上。网络对单条连接限速时
+# （现在每条只给 0.3 MB/s），开再多路也快不起来。这里每个数据中心开一组连接，每路独占一条。
+CONNS_PER_DC = LANES_TOTAL  # 一路一条连接
+
+
+class ConnPool:
+    def __init__(self, client):
+        self.client = client
+        self.dcs = {}      # 数据中心 -> [连接]
+        self.idle = {}     # 数据中心 -> 空闲连接的队列。一条连接同一时间只跑一个请求：
+                           # 实测一条连接上同时塞 8 个请求，比一次一个还慢 4 倍
+        self.locks = {}
+        self.broken = set()  # 开不了多连接的数据中心：退回 Telethon 自己那一条
+
+    def _init(self, query):
+        r = self.client._init_request
+        return functions.InvokeWithLayerRequest(LAYER, functions.InitConnectionRequest(
+            api_id=r.api_id, device_model=r.device_model, system_version=r.system_version,
+            app_version=r.app_version, lang_code=r.lang_code, system_lang_code=r.system_lang_code,
+            lang_pack="", query=query, proxy=r.proxy))
+
+    async def _open(self, dc_id, key):
+        c = self.client
+        dc = await c._get_dc(dc_id)
+        s = MTProtoSender(key, loggers=c._log)
+        await s.connect(c._connection(dc.ip_address, dc.port, dc.id, loggers=c._log,
+                                      proxy=c._proxy, local_addr=c._local_addr))
+        return s
+
+    async def senders(self, dc_id):
+        if dc_id in self.dcs:
+            return self.dcs[dc_id]
+        async with self.locks.setdefault(dc_id, asyncio.Lock()):
+            if dc_id in self.dcs:
+                return self.dcs[dc_id]
+            c = self.client
+            if dc_id == c.session.dc_id:  # 自己所在的数据中心：直接用登录时的密钥
+                key = c.session.auth_key
+                first = await self._open(dc_id, key)
+                await first.send(self._init(functions.help.GetConfigRequest()))
+            else:  # 别的数据中心：先把登录状态导过去，之后几条连接共用这把密钥
+                first = await self._open(dc_id, None)
+                auth = await c(functions.auth.ExportAuthorizationRequest(dc_id))
+                await first.send(self._init(functions.auth.ImportAuthorizationRequest(id=auth.id, bytes=auth.bytes)))
+                key = first.auth_key
+
+            async def more():
+                s = await asyncio.wait_for(self._open(dc_id, key), 20)
+                await asyncio.wait_for(s.send(self._init(functions.help.GetConfigRequest())), 20)
+                return s
+
+            # 先开 3 条马上能用，剩下的在后台每次 4 条慢慢加：一下子建二十几条连接会超时，反而卡住
+            rest = await asyncio.gather(*(more() for _ in range(3)), return_exceptions=True)
+            good = [first] + [s for s in rest if isinstance(s, MTProtoSender)]
+            q = asyncio.Queue()
+            for s in good:
+                q.put_nowait(s)
+            self.idle[dc_id] = q
+            self.dcs[dc_id] = good
+
+            async def grow():
+                fails = 0
+                while len(good) < CONNS_PER_DC and fails < 3 and dc_id in self.dcs:
+                    got = await asyncio.gather(*(more() for _ in range(min(4, CONNS_PER_DC - len(good)))),
+                                               return_exceptions=True)
+                    for s in got:
+                        if isinstance(s, MTProtoSender):
+                            good.append(s)
+                            q.put_nowait(s)
+                    fails = fails + 1 if not any(isinstance(s, MTProtoSender) for s in got) else 0
+                log.info("数据中心 %s 开了 %d 条连接", dc_id, len(good))
+
+            asyncio.create_task(grow())
+            return good
+
+    async def get(self, dc_id, loc, offset, limit):
+        await self.senders(dc_id)
+        q = self.idle[dc_id]
+        last = None
+        for attempt in range(6):
+            s = await q.get()  # 等一条空着的连接
+            try:
+                r = await s.send(functions.upload.GetFileRequest(loc, offset, limit))
+                return r.bytes
+            except errors.FloodWaitError as e:
+                for j in list(RUNNING):
+                    j.say(tr("Telegram 限流了，等 {sec} 秒后自动继续", sec=e.seconds))
+                await asyncio.sleep(e.seconds + 1)
+            except (errors.RPCError, asyncio.CancelledError):
+                raise  # 文件引用过期之类，交给上层处理
+            except Exception as e:  # 这条连接断了：换下一条（它自己会重连）
+                last = e
+                await asyncio.sleep(0.5)
+            finally:
+                q.put_nowait(s)
+        raise ConnectionError(f"多连接都取不到: {last!r}")
+
+    async def close(self):
+        for ss in self.dcs.values():
+            for s in ss:
+                try:
+                    await s.disconnect()
+                except Exception:
+                    pass
+        self.dcs.clear()
+        self.idle.clear()
+
+
+POOLS = {}
+
+
+def pool_for(client):
+    if id(client) not in POOLS:
+        POOLS[id(client)] = ConnPool(client)
+    return POOLS[id(client)]
+
+
+async def close_pool(client):
+    if p := POOLS.pop(id(client), None):
+        await p.close()
+
+
+def file_loc(media):
+    """(数据中心, 文件位置)。图片取最大的那张。拿不到（只有内嵌小图）返回 None。"""
+    if isinstance(media, types.Document):
+        return media.dc_id, types.InputDocumentFileLocation(media.id, media.access_hash, media.file_reference, "")
+    if isinstance(media, types.Photo):
+        real = [s for s in media.sizes if isinstance(s, (types.PhotoSize, types.PhotoSizeProgressive))]
+        if real:
+            big = max(real, key=utils._photo_size_byte_count)
+            return media.dc_id, types.InputPhotoFileLocation(media.id, media.access_hash, media.file_reference, big.type)
+    return None
+
+
+async def fetch_part(client, media, offset, limit=CHUNK):
+    """取文件的一段。优先走多连接；出问题就退回 Telethon 自己的单连接。"""
+    dc_id, loc = file_loc(media)
+    pool = pool_for(client)
+    if dc_id not in pool.broken:
+        try:
+            return await pool.get(dc_id, loc, offset, limit)
+        except (errors.RPCError, asyncio.CancelledError):
+            raise
+        except Exception as e:
+            log.warning("数据中心 %s 开不了多连接，退回单连接: %r", dc_id, e)
+            pool.broken.add(dc_id)
+    buf = b""
+    async for c in client.iter_download(loc, offset=offset, request_size=limit, limit=1, dc_id=dc_id):
+        buf += c
+    return buf
+
+
 def lanes_for(msg, size):
     """这个文件开几路。小文件开太多路反而慢（光建连接就花光时间）。"""
     if not msg.document or size < 2 * CHUNK:
@@ -1144,29 +1301,44 @@ def lanes_for(msg, size):
 async def download_file(client, msg, path, on_progress):
     """下载一个文件到 path。大文件分多路同时拉不同段，比一路顺着下快十倍左右。"""
     size = (msg.file.size if msg.file else 0) or 0
-    lanes = lanes_for(msg, size)
-    if lanes == 1:
+    media = msg.document or msg.photo
+    if media is None or file_loc(media) is None:  # 网页预览里的图、只有内嵌小图的：交给 Telethon
         async with LANES.take(1):
             return await client.download_media(msg, file=str(path), progress_callback=on_progress)
+    lanes = lanes_for(msg, size)
+    if lanes == 1:  # 小文件：一段一段顺着取，取到不满一段就是完了
+        async with LANES.take(1):
+            got = 0
+            with open(path, "wb") as f:
+                while True:
+                    data = await fetch_part(client, media, got)
+                    f.write(data)
+                    got += len(data)
+                    on_progress(got, size)
+                    if len(data) < CHUNK:
+                        break
+            if not got:
+                raise RuntimeError("没拿到数据")
+            return str(path)
     async with LANES.take(lanes):
         with open(path, "wb") as f:  # 先占好位置，各路按自己的偏移往里写
             f.truncate(size)
+        todo = deque(range(0, size, CHUNK))  # 各路谁先空下来谁取下一段，慢连接拖不住别的
         got = 0
         with open(path, "r+b") as f:
-            async def lane(i):
+            async def lane():
                 nonlocal got
-                pos = i * CHUNK
-                if pos >= size:
-                    return
-                async for chunk in client.iter_download(msg.document, offset=pos, stride=lanes * CHUNK,
-                                                        request_size=CHUNK, file_size=size):
+                while todo:
+                    pos = todo.popleft()
+                    data = await fetch_part(client, media, pos)
+                    if len(data) != min(CHUNK, size - pos):
+                        raise RuntimeError(f"第 {pos} 字节起那段不完整")
                     f.seek(pos)  # seek 和 write 中间没有 await，不会被别的路插进来改位置
-                    f.write(chunk)
-                    pos += lanes * CHUNK
-                    got += len(chunk)
+                    f.write(data)
+                    got += len(data)
                     on_progress(got, size)
 
-            await asyncio.gather(*(lane(i) for i in range(lanes)))
+            await asyncio.gather(*(lane() for _ in range(lanes)))
         if got != size:
             raise RuntimeError(f"只拿到 {got}/{size} 字节")
         return str(path)
@@ -1216,9 +1388,7 @@ async def get_chunk(client, doc, size, offset):
         return await asyncio.shield(_fetching[key])
 
     async def go():
-        buf = b""
-        async for c in client.iter_download(doc, offset=offset, request_size=CHUNK, limit=1, file_size=size):
-            buf += c
+        buf = await fetch_part(client, doc, offset)
         cache_put(key, buf)
         return buf
 
