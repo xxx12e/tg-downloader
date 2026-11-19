@@ -5,6 +5,7 @@ import logging
 import mimetypes
 import msvcrt
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -297,14 +298,45 @@ app = App()
 routes = web.RouteTableDef()
 
 
+def host_ok(request):
+    """只认 127.0.0.1 / localhost 加我们自己的端口。
+    防 DNS 重绑定：恶意网站把自己的域名改成解析到 127.0.0.1 以后，浏览器会把它当“同源”，
+    就能读到首页里的 token、进而调所有接口（读消息、发消息、下载并打开文件）。它发来的 Host 是它自己的域名。"""
+    sock = request.transport.get_extra_info("sockname") if request.transport else None
+    port = sock[1] if sock else None
+    return (request.headers.get("Host") or "").lower() in (f"127.0.0.1:{port}", f"localhost:{port}")
+
+
+def token_ok(request):
+    want = TOKEN.encode()
+    return any(secrets.compare_digest(want, (x or "").encode())  # 定长比较，不给按耗时猜 token 的机会
+               for x in (request.headers.get("X-Token"), request.query.get("t")))  # <img> 没法带请求头，走 ?t=
+
+
 @web.middleware
 async def guard(request, handler):
-    if request.path.startswith("/api/"):
-        if TOKEN not in (request.headers.get("X-Token"), request.query.get("t")):  # <img> 没法带请求头，走 ?t=
+    if not host_ok(request):
+        raise web.HTTPForbidden()
+    if request.path != "/":  # 除了首页，全部要 token（白名单比“只管 /api/”更不容易漏）
+        if not token_ok(request):
             raise web.HTTPForbidden()
         app.last_seen = time.time()
         app.closed_at = time.time() if request.path == "/api/bye" else None
     return await handler(request)
+
+
+# 首页：只有带本次随机 nonce 的那个 <script> 能跑，onclick=/onerror= 这种内联脚本一律不执行
+# （消息内容万一哪里漏了转义，注入的代码也跑不起来）；图片、请求都只许来自本机这个服务；不许被别的网页套在 iframe 里
+PAGE_CSP = ("default-src 'self'; script-src 'nonce-{nonce}'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; media-src 'self'; frame-src 'self'; connect-src 'self'; object-src 'none'; "
+            "base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+
+
+async def security_headers(_, resp):
+    """每个响应（包括边下边播那种流式响应）发出去前都加上。"""
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")  # 地址里带着 ?t=token，任何时候都别外传
+    resp.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
 
 
 def ok(**kw):
@@ -326,8 +358,10 @@ def under_downloads(path):
 
 @routes.get("/")
 async def index(_):
-    html = (WEB / "index.html").read_text("utf-8").replace("{{TOKEN}}", TOKEN)
-    return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-store"})
+    nonce = secrets.token_urlsafe(18)  # 每次打开页面都换一个
+    html = (WEB / "index.html").read_text("utf-8").replace("{{TOKEN}}", TOKEN).replace("{{NONCE}}", nonce)
+    return web.Response(text=html, content_type="text/html",
+                        headers={"Cache-Control": "no-store", "Content-Security-Policy": PAGE_CSP.format(nonce=nonce)})
 
 
 # ---- 登录 ----
@@ -494,6 +528,25 @@ async def photo(request):
 PLAY_MIME = {"video/quicktime": "video/mp4", "video/x-matroska": "video/webm", "audio/x-m4a": "audio/mp4"}
 
 
+def stream_headers(ct):
+    """边下边播/读本地文件时的类型和防护头。
+
+    文件类型（mime）是发文件的人自己填的，可以是 text/html 或带脚本的 SVG。这些内容和界面同源，
+    要是被当成网页打开（比如在大图上右键“在新标签页中打开图片”），里面的脚本就能拿到 token。
+    所以：只原样给音视频/图片/PDF，网页之类的一律降成纯文本或二进制；再加 CSP sandbox，
+    就算被直接打开，脚本也跑不起来、也不算同源。PDF 例外（加了 sandbox 浏览器就不肯显示 PDF）。"""
+    ct = (ct or "").split(";")[0].strip().lower()
+    ct = PLAY_MIME.get(ct, ct)
+    if not re.fullmatch(r"[a-z0-9.+-]+/[a-z0-9.+-]+", ct):
+        ct = "application/octet-stream"
+    elif not (ct == "application/pdf" or ct.startswith(("video/", "audio/", "image/"))):
+        ct = "text/plain" if ct.startswith("text/") else "application/octet-stream"
+    h = {"Content-Type": ct, "Content-Disposition": "inline", "Cache-Control": "no-store"}
+    if ct != "application/pdf":
+        h["Content-Security-Policy"] = "sandbox"
+    return h
+
+
 @routes.get("/api/stream")
 async def stream(request):
     """在线预览/播放：边下边播，支持拖进度条（Range）。不落盘；已经下载过的直接读本地文件。"""
@@ -502,11 +555,7 @@ async def stream(request):
         try:
             path = under_downloads(q["path"])
             if path.is_file():
-                headers = {"Content-Disposition": "inline", "Cache-Control": "no-store"}
-                ct = mimetypes.guess_type(path.name)[0]
-                if ct:
-                    headers["Content-Type"] = PLAY_MIME.get(ct, ct)
-                return web.FileResponse(path, headers=headers)
+                return web.FileResponse(path, headers=stream_headers(mimetypes.guess_type(path.name)[0]))
         except web.HTTPForbidden:
             pass
     key = (int(q["chat"]), int(q.get("post") or 0), int(q["id"]))
@@ -514,7 +563,6 @@ async def stream(request):
     if not msg.document or not msg.file.size:
         raise web.HTTPNotFound()
     size = msg.file.size
-    mime = PLAY_MIME.get(msg.file.mime_type, msg.file.mime_type) or "application/octet-stream"
     r = request.http_range
     start = r.start or 0
     stop = size if r.stop is None else min(r.stop, size)
@@ -530,8 +578,7 @@ async def stream(request):
         stop = start + 16 * 1024 * 1024
     partial = "Range" in request.headers
     resp = web.StreamResponse(status=206 if partial else 200, headers={
-        "Content-Type": mime, "Accept-Ranges": "bytes", "Content-Length": str(stop - start),
-        "Content-Disposition": "inline", "Cache-Control": "no-store"})
+        **stream_headers(msg.file.mime_type), "Accept-Ranges": "bytes", "Content-Length": str(stop - start)})
     if partial:
         resp.headers["Content-Range"] = f"bytes {start}-{stop - 1}/{size}"
     await resp.prepare(request)
@@ -875,11 +922,14 @@ async def open_path(request):
         path.mkdir(parents=True, exist_ok=True)
     if not path.exists():
         return web.json_response({"error": core.tr("文件不见了，可能被删了")}, status=404)
-    if body.get("reveal"):
+    # 频道里发的 exe/bat/py 等，点一下“打开”就直接运行了。和 Telegram 一样不直接打开：
+    # 只在文件夹里选中它，由你自己确认后再双击（文件带了“来自网络”标记，Windows 还会再提示一次）
+    risky = path.is_file() and path.suffix.lower() in core.RISKY_EXT
+    if body.get("reveal") or risky:
         subprocess.Popen(["explorer", "/select,", str(path)])
     else:
         os.startfile(path)
-    return ok()
+    return ok(risky=path.suffix.lower() if risky else None)
 
 
 # ---------------- 启动 ----------------
@@ -930,6 +980,7 @@ async def main():
     app.nav = goto
 
     webapp = web.Application(middlewares=[guard], client_max_size=2 * 1024 ** 3)  # 默认只收 1MB，发文件会被拒
+    webapp.on_response_prepare.append(security_headers)
     webapp.add_routes(routes)
     runner = web.AppRunner(webapp, access_log=None)
     await runner.setup()

@@ -591,6 +591,29 @@ def save_index():
         log.warning("下载记录存不下来: %r", e)
 
 
+RISKY_EXT = {  # 双击就会运行代码的文件：不直接打开，只在文件夹里选中
+    ".exe", ".com", ".scr", ".pif", ".bat", ".cmd", ".msi", ".msp", ".msix", ".msixbundle", ".appx",
+    ".appxbundle", ".appinstaller", ".application", ".appref-ms", ".gadget", ".cpl", ".msc", ".hta",
+    ".jar", ".js", ".jse", ".vb", ".vbs", ".vbe", ".wsf", ".wsh", ".ws", ".wsc", ".ps1", ".psm1",
+    ".psd1", ".ps1xml", ".psc1", ".reg", ".inf", ".lnk", ".url", ".website", ".scf", ".chm", ".dll",
+    ".sys", ".iso", ".img", ".vhd", ".vhdx", ".library-ms", ".settingcontent-ms", ".theme",
+    ".themepack", ".diagcab", ".xll", ".xlam", ".docm", ".dotm", ".xlsm", ".xltm", ".pptm", ".potm",
+    ".ppam", ".sldm", ".py", ".pyw", ".pyz", ".pyzw", ".pyc", ".pyo",
+}
+
+
+def mark_from_internet(path):
+    """给下载的文件打上“来自网络”标记（Mark of the Web），和浏览器下载的一样：
+    运行 exe 会有 SmartScreen 提示，Office 文档里的宏默认被拦。只在 Windows 的 NTFS 上有效，失败就算了。"""
+    if os.name != "nt" or not os.path.isfile(path):  # 文件不在就别写，不然会凭空建一个空文件
+        return
+    try:
+        with open(f"{path}:Zone.Identifier", "wb") as f:
+            f.write(b"[ZoneTransfer]\r\nZoneId=3\r\n")
+    except OSError:
+        pass
+
+
 def forward_name(m):
     f = m.forward
     if not f:
@@ -1018,6 +1041,7 @@ async def save_reply(client, msg, mine, me_name):
                     tmp = path.with_name(path.name + ".part")
                     if await download_file(client, msg, tmp, lambda *a: None) is not None:
                         os.replace(tmp, path)
+                mark_from_internet(path)
             if path.exists():
                 note_file(file_id(msg), path)
                 saved = path
@@ -1152,6 +1176,7 @@ class ConnPool:
                            # 实测一条连接上同时塞 8 个请求，比一次一个还慢 4 倍
         self.locks = {}
         self.broken = set()  # 开不了多连接的数据中心：退回 Telethon 自己那一条
+        self.tasks = set()   # 后台加连接的任务（要留着引用，不然会被回收）
 
     def _init(self, query):
         r = self.client._init_request
@@ -1160,12 +1185,25 @@ class ConnPool:
             app_version=r.app_version, lang_code=r.lang_code, system_lang_code=r.system_lang_code,
             lang_pack="", query=query, proxy=r.proxy))
 
-    async def _open(self, dc_id, key):
+    @staticmethod
+    async def _drop(s):
+        try:
+            await s.disconnect()
+        except Exception:
+            pass
+
+    async def _open(self, dc_id, key, init, timeout=None):
+        """开一条连接并发第一个请求。中途失败或超时要把它关掉，不然它的收发循环会一直挂着（漏连接）"""
         c = self.client
         dc = await c._get_dc(dc_id)
         s = MTProtoSender(key, loggers=c._log)
-        await s.connect(c._connection(dc.ip_address, dc.port, dc.id, loggers=c._log,
-                                      proxy=c._proxy, local_addr=c._local_addr))
+        try:
+            await asyncio.wait_for(s.connect(c._connection(dc.ip_address, dc.port, dc.id, loggers=c._log,
+                                                           proxy=c._proxy, local_addr=c._local_addr)), timeout)
+            await asyncio.wait_for(s.send(self._init(init)), timeout)
+        except BaseException:
+            await self._drop(s)
+            raise
         return s
 
     async def senders(self, dc_id):
@@ -1177,18 +1215,14 @@ class ConnPool:
             c = self.client
             if dc_id == c.session.dc_id:  # 自己所在的数据中心：直接用登录时的密钥
                 key = c.session.auth_key
-                first = await self._open(dc_id, key)
-                await first.send(self._init(functions.help.GetConfigRequest()))
+                first = await self._open(dc_id, key, functions.help.GetConfigRequest())
             else:  # 别的数据中心：先把登录状态导过去，之后几条连接共用这把密钥
-                first = await self._open(dc_id, None)
                 auth = await c(functions.auth.ExportAuthorizationRequest(dc_id))
-                await first.send(self._init(functions.auth.ImportAuthorizationRequest(id=auth.id, bytes=auth.bytes)))
+                first = await self._open(dc_id, None, functions.auth.ImportAuthorizationRequest(id=auth.id, bytes=auth.bytes))
                 key = first.auth_key
 
-            async def more():
-                s = await asyncio.wait_for(self._open(dc_id, key), 20)
-                await asyncio.wait_for(s.send(self._init(functions.help.GetConfigRequest())), 20)
-                return s
+            def more():
+                return self._open(dc_id, key, functions.help.GetConfigRequest(), 20)
 
             # 先开 3 条马上能用，剩下的在后台每次 4 条慢慢加：一下子建二十几条连接会超时，反而卡住
             rest = await asyncio.gather(*(more() for _ in range(3)), return_exceptions=True)
@@ -1205,13 +1239,19 @@ class ConnPool:
                     got = await asyncio.gather(*(more() for _ in range(min(4, CONNS_PER_DC - len(good)))),
                                                return_exceptions=True)
                     for s in got:
-                        if isinstance(s, MTProtoSender):
-                            good.append(s)
-                            q.put_nowait(s)
+                        if not isinstance(s, MTProtoSender):
+                            continue
+                        if dc_id not in self.dcs:  # 加的过程中整个池子被关了（退出登录/切号）
+                            await self._drop(s)
+                            continue
+                        good.append(s)
+                        q.put_nowait(s)
                     fails = fails + 1 if not any(isinstance(s, MTProtoSender) for s in got) else 0
                 log.info("数据中心 %s 开了 %d 条连接", dc_id, len(good))
 
-            asyncio.create_task(grow())
+            t = asyncio.create_task(grow())
+            self.tasks.add(t)
+            t.add_done_callback(self.tasks.discard)
             return good
 
     async def get(self, dc_id, loc, offset, limit):
@@ -1237,14 +1277,14 @@ class ConnPool:
         raise ConnectionError(f"多连接都取不到: {last!r}")
 
     async def close(self):
-        for ss in self.dcs.values():
-            for s in ss:
-                try:
-                    await s.disconnect()
-                except Exception:
-                    pass
+        for t in list(self.tasks):
+            t.cancel()
+        dcs = list(self.dcs.values())
         self.dcs.clear()
         self.idle.clear()
+        for ss in dcs:
+            for s in ss:
+                await self._drop(s)
 
 
 POOLS = {}
@@ -1724,6 +1764,7 @@ class Job:
             try:  # 这次要存到别的文件夹：直接从已有的那份复制，不用再下一遍
                 path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(have, path)
+                mark_from_internet(path)
                 self.skip += 1
                 self.dup += 1
                 note_file(fid, path)
@@ -1792,6 +1833,7 @@ class Job:
                     if await download_file(self.client, msg, tmp, progress) is None:
                         raise RuntimeError("没有拿到文件")
                     os.replace(tmp, path)
+                    mark_from_internet(path)
                     ok = True
                     break
                 except errors.FileReferenceExpiredError:
